@@ -8,7 +8,7 @@ import hashlib
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
-URL = "https://twoja-gazetka.pl/produkty/zwirek?store=kaufland"
+URL = "https://twoja-gazetka.pl/produkty/zwirek"
 MAX_PRICE = 24.99
 
 STATE_FILE = "seen.json"
