@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import json
 import os
 import re
+import hashlib
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
@@ -40,8 +41,15 @@ def save_seen(seen):
         json.dump(list(seen), f, indent=2)
 
 
+def make_product_id(text, price):
+    clean_text = " ".join(text.split())  # usuwa nadmiarowe spacje
+    raw = f"{clean_text}|{price}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
 def main():
     headers = {"User-Agent": "Mozilla/5.0"}
+
     response = requests.get(URL, headers=headers, timeout=30)
     response.raise_for_status()
 
@@ -64,7 +72,7 @@ def main():
         if price > MAX_PRICE:
             continue
 
-        product_id = f"{text}_{price}"
+        product_id = make_product_id(text, price)
 
         #  ANTY-DUPLIKAT
         if product_id in seen:
@@ -86,7 +94,7 @@ def main():
 
         print("Wysłano alert:", product_id)
 
-        return  # wysyła tylko 1 powiadomienie na run
+        return  # tylko 1 alert na uruchomienie
 
 
 if __name__ == "__main__":
