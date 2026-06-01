@@ -2,8 +2,11 @@ name: Zwirek bot
 
 on:
   schedule:
-    - cron: "0 8 * * 6"
+    - cron: "*/5 * * * *" 
   workflow_dispatch:
+
+permissions:
+  contents: write # 🔑 KLUCZ: Daje maszynie uprawnienia do edycji plików w Twoim repozytorium
 
 jobs:
   run:
@@ -26,3 +29,19 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python zwirek.py
+
+      # 💾 Tego brakowało! Zapisujemy stan seen.json z powrotem do Twojego repozytorium
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Sprawdzenie, czy skrypt zmodyfikował lub utworzył plik seen.json
+          if git status --porcelain | grep -q "seen.json"; then
+            git add seen.json
+            git commit -m "💾 Aktualizacja bazy danych seen.json [Automated]"
+            git push
+            echo "Zapisano zaktualizowany plik seen.json w repozytorium."
+          else
+            echo "Brak nowych promocji, seen.json bez zmian. Pomijam push."
+          fi
