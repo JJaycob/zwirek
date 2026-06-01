@@ -8,10 +8,9 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 URL = "https://twoja-gazetka.pl/produkty/zwirek?store=kaufland"
-
 MAX_PRICE = 24.99
 
-STATE_FILE = "state.json"
+STATE_FILE = "seen.json"
 
 
 def send_telegram(message):
@@ -25,100 +24,69 @@ def send_telegram(message):
     )
 
 
-def load_state():
+def load_seen():
     if not os.path.exists(STATE_FILE):
-        return {}
+        return set()
 
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except:
+        return set()
 
 
-def save_state(data):
+def save_seen(seen):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-
-def parse_price(price_text):
-
-    price_text = price_text.replace(",", ".")
-
-    match = re.search(r"(\d+\.\d+)", price_text)
-
-    if not match:
-        return None
-
-    return float(match.group(1))
+        json.dump(list(seen), f, indent=2)
 
 
 def main():
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
+    headers = {"User-Agent": "Mozilla/5.0"}
     response = requests.get(URL, headers=headers, timeout=30)
-
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-
     products = soup.select(".product-card-grid-wrapper a")
-    
+
     print("Liczba znalezionych produktów:", len(products))
-    
-    for p in products[:5]:
-        print("----")
-        print(p.get_text(" ", strip=True))
 
-    state = load_state()
-
-    last_seen = state.get("last_seen")
+    seen = load_seen()
 
     for product in products:
-
         text = product.get_text(" ", strip=True)
 
-        price_match = re.search(
-            r"(\d+,\d+)\s*zł",
-            text,
-            re.IGNORECASE
-        )
-
+        price_match = re.search(r"(\d+,\d+)\s*zł", text, re.IGNORECASE)
         if not price_match:
             continue
 
-        price = float(
-            price_match.group(1).replace(",", ".")
-        )
+        price = float(price_match.group(1).replace(",", "."))
 
         if price > MAX_PRICE:
             continue
 
         product_id = f"{text}_{price}"
 
-        if product_id == last_seen:
-            print("Ta promocja była już zgłoszona.")
-            return
+        #  ANTY-DUPLIKAT
+        if product_id in seen:
+            continue
 
-        discount = round(
-            (1 - price / 24.99) * 100,
-            1
-        )
+        discount = round((1 - price / MAX_PRICE) * 100, 1)
 
         msg = (
             f"🐱 WYKRYTO ŻWIREK W KAUFLANDZIE\n\n"
             f"{text}\n\n"
             f"Cena: {price:.2f} zł\n"
-            f"Rabat względem 24.99 zł: {discount}%"
+            f"Rabat względem {MAX_PRICE} zł: {discount}%"
         )
 
         send_telegram(msg)
 
-        save_state({
-            "last_seen": product_id
-        })
+        seen.add(product_id)
+        save_seen(seen)
 
-        return
+        print("Wysłano alert:", product_id)
+
+        return  # wysyła tylko 1 powiadomienie na run
 
 
 if __name__ == "__main__":
