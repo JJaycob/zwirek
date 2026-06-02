@@ -2,7 +2,7 @@ name: Zwirek bot
 
 on:
   schedule:
-    - cron: "2 9 * * *" 
+    - cron: "2 5 * * 5" 
   workflow_dispatch:
 
 permissions:
