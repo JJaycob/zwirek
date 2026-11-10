@@ -108,13 +108,13 @@ def parse_date(value):
     if not value:
         return None
     value = str(value).strip()
-    iso = re.search(r"(?<!\\d)(20\\d{2}-\\d{2}-\\d{2})", value)
+    iso = re.search(r"(?<!\d)(20\d{2}-\d{2}-\d{2})", value)
     if iso:
         try:
             return date.fromisoformat(iso.group(1))
         except ValueError:
             pass
-    polish = re.search(r"(?<!\\d)(\\d{1,2})[./-](\\d{1,2})[./-](20\\d{2})(?!\\d)", value)
+    polish = re.search(r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](20\d{2})(?!\d)", value)
     if polish:
         try:
             return date(int(polish.group(3)), int(polish.group(2)), int(polish.group(1)))
@@ -144,14 +144,14 @@ def parse_article(url):
         published = parse_date(article_text)
     if not published:
         # JSON-LD datePublished is used as a final date fallback.
-        match = re.search(r'"datePublished"\\s*:\\s*"([^"]+)"', source, flags=re.IGNORECASE)
+        match = re.search(r'"datePublished"\s*:\s*"([^"]+)"', source, flags=re.IGNORECASE)
         if match:
             published = parse_date(match.group(1))
     if not published:
         raise ValueError(f"Nie udało się ustalić daty publikacji artykułu: {final_url}")
 
     price_match = re.search(
-        r"benzyna\\s*95\\s*[-–—:]\\s*(\\d{1,2}[,.]\\d{2})\\s*zł\\s*/\\s*l",
+        r"benzyna\s*95\s*[-–—:]\s*(\d{1,2}[,.]\d{2})\s*zł\s*/\s*l",
         article_text,
         flags=re.IGNORECASE,
     )
@@ -251,7 +251,7 @@ def load_state():
 
 
 def save_state(state):
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def send_telegram(message):
@@ -342,13 +342,13 @@ def main():
         change_line = f"▼ Taniej o {abs(difference):.2f} zł/l"
 
     message = (
-        "⛽ ZMIANA MAKSYMALNEJ CENY PALIWA – PB95\\n"
-        "━━━━━━━━━━━━━━━━━━\\n"
-        f"📅 Obowiązuje od: {effective_date:%d.%m.%Y}\\n"
-        f"💰 Nowa cena maksymalna: {price:.2f} zł/l\\n"
-        f"{change_line} (poprzednio {float(previous_price):.2f} zł/l)\\n"
-        "━━━━━━━━━━━━━━━━━━\\n"
-        "Źródło: Ministerstwo Energii\\n"
+        "⛽ ZMIANA MAKSYMALNEJ CENY PALIWA – PB95\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📅 Obowiązuje od: {effective_date:%d.%m.%Y}\n"
+        f"💰 Nowa cena maksymalna: {price:.2f} zł/l\n"
+        f"{change_line} (poprzednio {float(previous_price):.2f} zł/l)\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Źródło: Ministerstwo Energii\n"
         f"{notice_id}"
     )
 
