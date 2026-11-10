@@ -3,7 +3,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode
@@ -124,7 +124,7 @@ def main():
 
     # Dwa wywołania cron (14:30 i 15:30 UTC) obsługują czas letni i zimowy.
     # Pracujemy tylko o 16:30 czasu polskiego; ręczne uruchomienie omija ten warunek.
-    if not manual and not (now.hour == 16 and 25 <= now.minute <= 40):
+    if not manual and not (now.hour == 16 and 25 <= now.minute <= 59):
         print(f"Poza oknem wysyłki (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
         return
 
@@ -144,14 +144,14 @@ def main():
 
     state = load_state()
     previous_price = state.get("last_price")
+    notice_id = notice.get("ELI") or notice.get("displayAddress")
 
-    if previous_price is not None and round(float(previous_price), 2) == round(price, 2):
-        print(f"Obwieszczenie znalezione, ale PB95 nadal kosztuje {price:.2f} zł/l. Bez powiadomienia.")
-        state["last_notice"] = notice.get("ELI") or notice.get("displayAddress")
-        save_state(state)
+    # Powiadamiamy o każdym nowym obwieszczeniu, nawet jeśli cena liczbowa się nie zmieniła.
+    if notice_id and notice_id == state.get("last_notice"):
+        print("To obwieszczenie zostało już obsłużone. Bez powiadomienia.")
         return
 
-    effective_date = today.fromordinal(today.toordinal() + 1)
+    effective_date = datetime.fromisoformat(notice["promulgation"]).date() + timedelta(days=1)
     if previous_price is None:
         change_line = "Pierwsza odczytana cena w monitoringu."
     else:
@@ -161,7 +161,7 @@ def main():
         elif difference < 0:
             change_line = f"▼ Taniej o {abs(difference):.2f} zł/l"
         else:
-            change_line = "Bez zmiany."
+            change_line = "Cena bez zmian względem poprzedniego obwieszczenia."
 
     message = (
         "⛽ NOWA CENA PALIWA – PB95\n"
@@ -177,7 +177,7 @@ def main():
     send_telegram(message)
     state = {
         "last_price": round(price, 2),
-        "last_notice": notice.get("ELI") or notice.get("displayAddress"),
+        "last_notice": notice_id,
         "sent_at": now.isoformat(),
         "effective_from": effective_date.isoformat(),
     }
