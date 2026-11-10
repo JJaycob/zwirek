@@ -45,23 +45,42 @@ def get_text(url):
 
 
 def latest_todays_notice(today):
+    # Nie filtrujemy po dateFrom/dateTo w samym API: ELI wiąże je z datą wydania aktu,
+    # a niekoniecznie z datą publikacji w Monitorze Polskim. Pobieramy kandydatów
+    # po tytule i sprawdzamy lokalnie oba pola daty zwracane przez ELI.
     params = urlencode({
         "publisher": "MP",
         "year": today.year,
         "title": "maksymalnej ceny paliw",
-        "dateFrom": today.isoformat(),
-        "dateTo": today.isoformat(),
         "limit": 100,
     })
     data = get_json(f"{API_BASE}/acts/search?{params}")
     items = data.get("items", [])
+    print(f"ELI: otrzymano {len(items)} wyników (łącznie: {data.get('totalCount', data.get('count', '?'))}).")
+
     matches = [
         item for item in items
         if "maksymalnej ceny paliw" in item.get("title", "").casefold()
-        and item.get("promulgation") == today.isoformat()
     ]
-    return matches[0] if matches else None
+    for item in matches[:10]:
+        print(
+            "ELI kandydat:",
+            item.get("displayAddress"),
+            "| promulgation:", item.get("promulgation"),
+            "| announcementDate:", item.get("announcementDate"),
+            "| title:", item.get("title"),
+        )
 
+    same_day = [
+        item for item in matches
+        if today.isoformat() in {item.get("promulgation"), item.get("announcementDate")}
+    ]
+    if not same_day:
+        print(f"Nie znaleziono obwieszczenia opublikowanego/wydanego {today.isoformat()}.")
+        return None
+
+    same_day.sort(key=lambda item: item.get("pos", 0), reverse=True)
+    return same_day[0]
 
 def extract_pb95_gross(document_text):
     normalized = " ".join(document_text.split())
