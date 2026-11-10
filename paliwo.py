@@ -45,60 +45,81 @@ def get_text(url):
 
 
 def latest_todays_notice(today):
-    # Nie filtrujemy po dateFrom/dateTo w samym API: ELI wiąże je z datą wydania aktu,
-    # a niekoniecznie z datą publikacji w Monitorze Polskim. Pobieramy kandydatów
-    # po tytule i sprawdzamy lokalnie oba pola daty zwracane przez ELI.
+    # W ELI dateFrom/dateTo filtrują datę wydania aktu. Dla daty publikacji
+    # w Monitorze Polskim właściwe są pubDateFrom/pubDateTo.
     params = urlencode({
         "publisher": "MP",
         "year": today.year,
         "title": "maksymalnej ceny paliw",
+        "pubDateFrom": today.isoformat(),
+        "pubDateTo": today.isoformat(),
         "limit": 100,
     })
     data = get_json(f"{API_BASE}/acts/search?{params}")
     items = data.get("items", [])
-    print(f"ELI: otrzymano {len(items)} wyników (łącznie: {data.get('totalCount', data.get('count', '?'))}).")
+    print(f"ELI search: {len(items)} wyników; liczba całkowita: {data.get('totalCount', data.get('count', '?'))}.")
+
+    # Fallback: roczna lista aktów, jeśli wyszukiwarka nie zwróciła dokumentu.
+    if not items:
+        print("Brak wyników z wyszukiwarki ELI – pobieram roczną listę Monitora Polskiego.")
+        annual = get_json(f"{API_BASE}/acts/MP/{today.year}")
+        items = annual.get("items", [])
+        print(f"ELI annual list: {len(items)} aktów.")
 
     matches = [
         item for item in items
         if "maksymalnej ceny paliw" in item.get("title", "").casefold()
+        and today.isoformat() in {item.get("promulgation"), item.get("announcementDate")}
     ]
-    for item in matches[:10]:
+    for item in matches:
         print(
-            "ELI kandydat:",
+            "Znalezione obwieszczenie:",
             item.get("displayAddress"),
-            "| promulgation:", item.get("promulgation"),
-            "| announcementDate:", item.get("announcementDate"),
-            "| title:", item.get("title"),
+            "| data ogłoszenia:", item.get("promulgation"),
+            "| data wydania:", item.get("announcementDate"),
+            "| tytuł:", item.get("title"),
         )
 
-    same_day = [
-        item for item in matches
-        if today.isoformat() in {item.get("promulgation"), item.get("announcementDate")}
-    ]
-    if not same_day:
-        print(f"Nie znaleziono obwieszczenia opublikowanego/wydanego {today.isoformat()}.")
+    if not matches:
+        print(f"ELI: brak obwieszczenia o maksymalnej cenie paliw z datą {today.isoformat()}.")
         return None
 
-    same_day.sort(key=lambda item: item.get("pos", 0), reverse=True)
-    return same_day[0]
+    matches.sort(key=lambda item: item.get("pos", 0), reverse=True)
+    return matches[0]
 
 def extract_pb95_gross(document_text):
-    normalized = " ".join(document_text.split())
-    section = re.search(
-        r"benzyny?\s+silnikowej\s+bezołowiowej\s+95(.*?)(?=2\s*[.)])",
+    normalized = " ".join(document_text.replace("\\xa0", " ").split())
+    # Wycinamy wyłącznie punkt dotyczący benzyny 95, aż do punktu dla PB98.
+    start = re.search(
+        r"benzyny?\\s+silnikowej\\s+bezołowiowej\\s+95",
         normalized,
         flags=re.IGNORECASE,
     )
-    if not section:
-        raise ValueError("Nie znaleziono sekcji dotyczącej benzyny 95 w obwieszczeniu.")
+    if not start:
+        raise ValueError("Nie znaleziono w obwieszczeniu sekcji dotyczącej benzyny 95.")
 
-    prices = re.findall(r"(\d+[,.]\d{2})\s*zł", section.group(1), flags=re.IGNORECASE)
-    if len(prices) < 2:
-        raise ValueError("Nie udało się odczytać ceny brutto PB95 z obwieszczenia.")
+    rest = normalized[start.start():]
+    next_section = re.search(
+        r"\\b2\\s*[.)]\\s*dla\\s+benzyny?\\s+silnikowej\\s+bezołowiowej\\s+98",
+        rest,
+        flags=re.IGNORECASE,
+    )
+    section = rest[:next_section.start()] if next_section else rest[:700]
 
-    # Pierwsza wartość jest przed VAT, druga to cena detaliczna brutto.
-    return float(prices[1].replace(",", "."))
+    # W obwieszczeniu lit. a) to cena bez VAT, a lit. b) – cena brutto.
+    gross = re.search(
+        r"b\\s*[.)].{0,180}?powiększona\\s+o\\s+podatek.{0,100}?wynosi\\s+(\\d+[,.]\\d{2})\\s*zł",
+        section,
+        flags=re.IGNORECASE,
+    )
+    if gross:
+        return float(gross.group(1).replace(",", "."))
 
+    # Awaryjnie: z dwóch kwot w punkcie PB95 wybierz drugą (brutto).
+    prices = re.findall(r"(\\d+[,.]\\d{2})\\s*zł", section, flags=re.IGNORECASE)
+    if len(prices) >= 2:
+        return float(prices[1].replace(",", "."))
+    raise ValueError("Nie udało się odczytać ceny brutto PB95 z obwieszczenia.")
 
 def load_state():
     if not STATE_FILE.exists():
