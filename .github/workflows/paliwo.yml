@@ -30,6 +30,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHECK_ONLY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: python paliwo.py
 
       - name: Save notification state
