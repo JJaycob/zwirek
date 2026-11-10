@@ -1,0 +1,42 @@
+name: PB95 CPN price notifier
+
+on:
+  schedule:
+    # 14:30 UTC = 16:30 CEST; 15:30 UTC = 16:30 CET.
+    # Script itself checks Europe/Warsaw time, so only one run proceeds.
+    - cron: "30 14 * * *"
+    - cron: "30 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-price:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check official CPN announcement and notify
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python paliwo.py
+
+      - name: Save notification state
+        run: |
+          if git status --porcelain | grep -q "paliwo_seen.json"; then
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add paliwo_seen.json
+            git commit -m "Save last PB95 price"
+            git push
+          else
+            echo "No state changes."
+          fi
