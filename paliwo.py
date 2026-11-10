@@ -52,8 +52,6 @@ def latest_todays_notice(today):
         "dateFrom": today.isoformat(),
         "dateTo": today.isoformat(),
         "limit": 100,
-        "sortBy": "promulgation",
-        "sortDir": "desc",
     })
     data = get_json(f"{API_BASE}/acts/search?{params}")
     items = data.get("items", [])
@@ -170,7 +168,8 @@ def main():
         f"💰 Cena maksymalna: {price:.2f} zł/l\n"
         f"{change_line}\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "Źródło: Monitor Polski – obwieszczenie Ministra Energii"
+        "Źródło: Monitor Polski – obwieszczenie Ministra Energii\n"
+        f"https://monitorpolski.gov.pl/{notice.get('address', '')}.pdf"
     )
 
     # Najpierw wysyłka, dopiero potem zapis stanu – awaria Telegrama nie zgubi powiadomienia.
