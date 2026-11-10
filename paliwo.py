@@ -88,10 +88,10 @@ def latest_todays_notice(today):
     return matches[0]
 
 def extract_pb95_gross(document_text):
-    normalized = " ".join(document_text.replace("\\xa0", " ").split())
+    normalized = " ".join(document_text.replace("\xa0", " ").split())
     # Wycinamy wyłącznie punkt dotyczący benzyny 95, aż do punktu dla PB98.
     start = re.search(
-        r"benzyny?\\s+silnikowej\\s+bezołowiowej\\s+95",
+        r"benzyny?\s+silnikowej\s+bezołowiowej\s+95",
         normalized,
         flags=re.IGNORECASE,
     )
@@ -100,7 +100,7 @@ def extract_pb95_gross(document_text):
 
     rest = normalized[start.start():]
     next_section = re.search(
-        r"\\b2\\s*[.)]\\s*dla\\s+benzyny?\\s+silnikowej\\s+bezołowiowej\\s+98",
+        r"\b2\s*[.)]\s*dla\s+benzyny?\s+silnikowej\s+bezołowiowej\s+98",
         rest,
         flags=re.IGNORECASE,
     )
@@ -108,7 +108,7 @@ def extract_pb95_gross(document_text):
 
     # W obwieszczeniu lit. a) to cena bez VAT, a lit. b) – cena brutto.
     gross = re.search(
-        r"b\\s*[.)].{0,180}?powiększona\\s+o\\s+podatek.{0,100}?wynosi\\s+(\\d+[,.]\\d{2})\\s*zł",
+        r"b\s*[.)].{0,180}?powiększona\s+o\s+podatek.{0,100}?wynosi\s+(\d+[,.]\d{2})\s*zł",
         section,
         flags=re.IGNORECASE,
     )
@@ -116,7 +116,7 @@ def extract_pb95_gross(document_text):
         return float(gross.group(1).replace(",", "."))
 
     # Awaryjnie: z dwóch kwot w punkcie PB95 wybierz drugą (brutto).
-    prices = re.findall(r"(\\d+[,.]\\d{2})\\s*zł", section, flags=re.IGNORECASE)
+    prices = re.findall(r"(\d+[,.]\d{2})\s*zł", section, flags=re.IGNORECASE)
     if len(prices) >= 2:
         return float(prices[1].replace(",", "."))
     raise ValueError("Nie udało się odczytać ceny brutto PB95 z obwieszczenia.")
