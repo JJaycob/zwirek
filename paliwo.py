@@ -175,9 +175,9 @@ def main():
         if manual:
             # Ręczne uruchomienie służy też do sprawdzenia Telegrama i sekretów.
             send_telegram(
-                "🧪 TEST TELEGRAMA – BOT PB95\\n"
-                "Skrypt uruchomił się poprawnie i dotarł do funkcji wysyłającej.\\n"
-                "Nie znaleziono jeszcze nowego obwieszczenia w Monitorze Polskim.\\n"
+                "🧪 TEST TELEGRAMA – BOT PB95\n"
+                "Skrypt uruchomił się poprawnie i dotarł do funkcji wysyłającej.\n"
+                "Nie znaleziono jeszcze nowego obwieszczenia w Monitorze Polskim.\n"
                 "To wiadomość diagnostyczna, nie powiadomienie o nowej cenie."
             )
             print("Wysłano diagnostyczny test Telegrama (uruchomienie ręczne).")
