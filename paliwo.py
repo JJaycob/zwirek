@@ -80,8 +80,8 @@ def get_pdf_text(url):
 
 
 def pdf_url_for_notice(year, position):
-    filename = f"M{year}{position:04d}.pdf"
-    return f"https://eli.gov.pl/api/acts/MP/{year}/{position}/text/I/{filename}"
+    # Oficjalny endpoint ELI dla tekstu aktu w PDF.
+    return f"{API_BASE}/acts/MP/{year}/{position}/text.pdf"
 
 
 def latest_todays_notice(today):
@@ -94,25 +94,33 @@ def latest_todays_notice(today):
         "pubDateTo": today.isoformat(),
         "limit": 100,
     })
-    data = get_json(f"{API_BASE}/acts/search?{params}")
-    items = data.get("items", [])
-    print(f"ELI search: {len(items)} wyników.")
+    items = []
+    try:
+        data = get_json(f"{API_BASE}/acts/search?{params}")
+        items = data.get("items", [])
+        print(f"ELI search: {len(items)} wyników.")
+    except Exception as exc:
+        print(f"ELI search chwilowo niedostępne: {exc}. Przechodzę do rocznej listy aktów.")
 
     def filter_today(records):
         return [
             item for item in records
             if "maksymalnej ceny paliw" in item.get("title", "").casefold()
-            and today.isoformat() in {item.get("promulgation"), item.get("announcementDate")}
+            and item.get("promulgation") == today.isoformat()
         ]
 
     matches = filter_today(items)
     annual_items = []
     if not matches:
         print("Wyszukiwarka nie zwróciła dzisiejszego aktu – sprawdzam roczną listę MP.")
-        annual = get_json(f"{API_BASE}/acts/MP/{today.year}")
-        annual_items = annual.get("items", [])
-        print(f"ELI annual list: {len(annual_items)} aktów; totalCount={annual.get('totalCount', '?')}.")
-        matches = filter_today(annual_items)
+        try:
+            annual = get_json(f"{API_BASE}/acts/MP/{today.year}")
+            annual_items = annual.get("items", [])
+            print(f"ELI annual list: {len(annual_items)} aktów; totalCount={annual.get('totalCount', '?')}.")
+            matches = filter_today(annual_items)
+        except Exception as exc:
+            print(f"ELI annual list chwilowo niedostępna: {exc}. Spróbuję sprawdzić numerację PDF na podstawie ostatnio znanej pozycji.")
+            annual_items = []
 
     if matches:
         matches.sort(key=lambda item: item.get("pos", 0), reverse=True)
@@ -126,7 +134,7 @@ def latest_todays_notice(today):
 
     # API sejm.gov.pl może mieć opóźnienie względem publikacji na stronie ELI.
     # Sprawdzamy kilka kolejnych numerów pozycji bezpośrednio w oficjalnym repozytorium PDF.
-    latest_position = max((item.get("pos", 0) for item in annual_items), default=0)
+    latest_position = max((item.get("pos", 0) for item in annual_items), default=1120)
     polish_months = {
         1: "stycznia", 2: "lutego", 3: "marca", 4: "kwietnia",
         5: "maja", 6: "czerwca", 7: "lipca", 8: "sierpnia",
