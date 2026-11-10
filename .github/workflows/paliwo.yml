@@ -23,6 +23,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
       - name: Check official CPN announcement and notify
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
