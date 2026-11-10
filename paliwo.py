@@ -45,8 +45,8 @@ def get_text(url):
 
 
 def latest_todays_notice(today):
-    # W ELI dateFrom/dateTo filtrują datę wydania aktu. Dla daty publikacji
-    # w Monitorze Polskim właściwe są pubDateFrom/pubDateTo.
+    # ELI dateFrom/dateTo dotyczą daty wydania aktu; pubDateFrom/pubDateTo
+    # filtrują datę publikacji w Monitorze Polskim.
     params = urlencode({
         "publisher": "MP",
         "year": today.year,
@@ -57,36 +57,36 @@ def latest_todays_notice(today):
     })
     data = get_json(f"{API_BASE}/acts/search?{params}")
     items = data.get("items", [])
-    print(f"ELI search: {len(items)} wyników; liczba całkowita: {data.get('totalCount', data.get('count', '?'))}.")
+    print(f"ELI search: {len(items)} wyników.")
 
-    # Fallback: roczna lista aktów, jeśli wyszukiwarka nie zwróciła dokumentu.
-    if not items:
-        print("Brak wyników z wyszukiwarki ELI – pobieram roczną listę Monitora Polskiego.")
+    def filter_today(records):
+        return [
+            item for item in records
+            if "maksymalnej ceny paliw" in item.get("title", "").casefold()
+            and today.isoformat() in {item.get("promulgation"), item.get("announcementDate")}
+        ]
+
+    matches = filter_today(items)
+    if not matches:
+        print("Wyszukiwarka nie zwróciła dzisiejszego aktu – sprawdzam roczną listę MP.")
         annual = get_json(f"{API_BASE}/acts/MP/{today.year}")
-        items = annual.get("items", [])
-        print(f"ELI annual list: {len(items)} aktów.")
+        annual_items = annual.get("items", [])
+        print(f"ELI annual list: {len(annual_items)} aktów.")
+        matches = filter_today(annual_items)
 
-    matches = [
-        item for item in items
-        if "maksymalnej ceny paliw" in item.get("title", "").casefold()
-        and today.isoformat() in {item.get("promulgation"), item.get("announcementDate")}
-    ]
     for item in matches:
         print(
-            "Znalezione obwieszczenie:",
-            item.get("displayAddress"),
+            "Znalezione obwieszczenie:", item.get("displayAddress"),
             "| data ogłoszenia:", item.get("promulgation"),
             "| data wydania:", item.get("announcementDate"),
-            "| tytuł:", item.get("title"),
         )
 
     if not matches:
-        print(f"ELI: brak obwieszczenia o maksymalnej cenie paliw z datą {today.isoformat()}.")
+        print(f"ELI: nie znaleziono obwieszczenia o maksymalnej cenie paliw z datą {today.isoformat()}.")
         return None
 
     matches.sort(key=lambda item: item.get("pos", 0), reverse=True)
     return matches[0]
-
 def extract_pb95_gross(document_text):
     normalized = " ".join(document_text.replace("\xa0", " ").split())
     # Wycinamy wyłącznie punkt dotyczący benzyny 95, aż do punktu dla PB98.
