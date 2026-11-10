@@ -149,6 +149,13 @@ def main():
         print("To obwieszczenie zostało już obsłużone. Bez powiadomienia.")
         return
 
+    # Nowe obwieszczenie z identyczną ceną nie wymaga alertu, ale zapisujemy jego ID.
+    if previous_price is not None and round(float(previous_price), 2) == round(price, 2):
+        state["last_notice"] = notice_id
+        state["last_checked_at"] = now.isoformat()
+        save_state(state)
+        print(f"Nowe obwieszczenie, ale PB95 bez zmiany ({price:.2f} zł/l). Bez powiadomienia.")
+        return
     effective_date = datetime.fromisoformat(notice["promulgation"]).date() + timedelta(days=1)
     if previous_price is None:
         change_line = "Pierwsza odczytana cena w monitoringu."
