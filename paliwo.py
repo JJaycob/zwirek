@@ -171,7 +171,18 @@ def main():
 
     notice = latest_todays_notice(today)
     if not notice:
-        print("Brak nowego obwieszczenia CPN z dzisiejszą datą. Nie wysyłam wiadomości.")
+        print("Brak nowego obwieszczenia CPN z dzisiejszą datą.")
+        if manual:
+            # Ręczne uruchomienie służy też do sprawdzenia Telegrama i sekretów.
+            send_telegram(
+                "🧪 TEST TELEGRAMA – BOT PB95\\n"
+                "Skrypt uruchomił się poprawnie i dotarł do funkcji wysyłającej.\\n"
+                "Nie znaleziono jeszcze nowego obwieszczenia w Monitorze Polskim.\\n"
+                "To wiadomość diagnostyczna, nie powiadomienie o nowej cenie."
+            )
+            print("Wysłano diagnostyczny test Telegrama (uruchomienie ręczne).")
+        else:
+            print("Uruchomienie automatyczne: brak powiadomienia.")
         return
 
     year = notice["year"]
