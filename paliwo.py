@@ -1,13 +1,19 @@
 import html
+import io
+import socket
+import time
 import json
 import os
 import re
 import sys
 from datetime import datetime, timedelta
+from http.client import RemoteDisconnected
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from pypdf import PdfReader
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Europe/Warsaw")
@@ -29,24 +35,57 @@ class TextExtractor(HTMLParser):
         return " ".join(self.parts)
 
 
+def fetch_bytes(url, accept="*/*"):
+    """GET with retries for temporary disconnects and HTTP 5xx/429 responses."""
+    retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
+    last_error = None
+    for attempt in range(1, 6):
+        request = Request(url, headers={"Accept": accept, "User-Agent": "PB95-price-notifier/1.0"})
+        try:
+            with urlopen(request, timeout=40) as response:
+                return response.read()
+        except HTTPError as exc:
+            if exc.code not in retryable_statuses or attempt == 5:
+                raise
+            last_error = exc
+        except (URLError, RemoteDisconnected, TimeoutError, socket.timeout, ConnectionError, OSError) as exc:
+            if attempt == 5:
+                raise
+            last_error = exc
+        delay = min(2 ** (attempt - 1), 8)
+        print(f"Tymczasowy błąd pobierania ({attempt}/5): {last_error}. Ponawiam za {delay} s.")
+        time.sleep(delay)
+    raise RuntimeError(f"Nie udało się pobrać {url}: {last_error}")
+
+
 def get_json(url):
-    request = Request(url, headers={"Accept": "application/json", "User-Agent": "PB95-price-notifier/1.0"})
-    with urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    raw = fetch_bytes(url, "application/json")
+    return json.loads(raw.decode("utf-8"))
 
 
 def get_text(url):
-    request = Request(url, headers={"User-Agent": "PB95-price-notifier/1.0"})
-    with urlopen(request, timeout=30) as response:
-        raw = response.read().decode("utf-8")
+    raw = fetch_bytes(url, "text/html,application/xhtml+xml,*/*")
     parser = TextExtractor()
-    parser.feed(raw)
+    parser.feed(raw.decode("utf-8", errors="replace"))
     return html.unescape(parser.get_text())
 
 
+def get_pdf_text(url):
+    raw = fetch_bytes(url, "application/pdf,*/*")
+    reader = PdfReader(io.BytesIO(raw))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    if len(text.strip()) < 80:
+        raise ValueError("PDF nie zawiera wystarczającej ilości tekstu do odczytu.")
+    return text
+
+
+def pdf_url_for_notice(year, position):
+    filename = f"M{year}{position:04d}.pdf"
+    return f"https://eli.gov.pl/api/acts/MP/{year}/{position}/text/I/{filename}"
+
+
 def latest_todays_notice(today):
-    # ELI dateFrom/dateTo dotyczą daty wydania aktu; pubDateFrom/pubDateTo
-    # filtrują datę publikacji w Monitorze Polskim.
+    # Najpierw sprawdzamy oficjalne API ELI po dacie publikacji.
     params = urlencode({
         "publisher": "MP",
         "year": today.year,
@@ -67,26 +106,68 @@ def latest_todays_notice(today):
         ]
 
     matches = filter_today(items)
+    annual_items = []
     if not matches:
         print("Wyszukiwarka nie zwróciła dzisiejszego aktu – sprawdzam roczną listę MP.")
         annual = get_json(f"{API_BASE}/acts/MP/{today.year}")
         annual_items = annual.get("items", [])
-        print(f"ELI annual list: {len(annual_items)} aktów.")
+        print(f"ELI annual list: {len(annual_items)} aktów; totalCount={annual.get('totalCount', '?')}.")
         matches = filter_today(annual_items)
 
-    for item in matches:
-        print(
-            "Znalezione obwieszczenie:", item.get("displayAddress"),
-            "| data ogłoszenia:", item.get("promulgation"),
-            "| data wydania:", item.get("announcementDate"),
-        )
+    if matches:
+        matches.sort(key=lambda item: item.get("pos", 0), reverse=True)
+        for item in matches:
+            print(
+                "Znalezione obwieszczenie:", item.get("displayAddress"),
+                "| data publikacji:", item.get("promulgation"),
+                "| data wydania:", item.get("announcementDate"),
+            )
+        return matches[0]
 
-    if not matches:
-        print(f"ELI: nie znaleziono obwieszczenia o maksymalnej cenie paliw z datą {today.isoformat()}.")
-        return None
+    # API sejm.gov.pl może mieć opóźnienie względem publikacji na stronie ELI.
+    # Sprawdzamy kilka kolejnych numerów pozycji bezpośrednio w oficjalnym repozytorium PDF.
+    latest_position = max((item.get("pos", 0) for item in annual_items), default=0)
+    polish_months = {
+        1: "stycznia", 2: "lutego", 3: "marca", 4: "kwietnia",
+        5: "maja", 6: "czerwca", 7: "lipca", 8: "sierpnia",
+        9: "września", 10: "października", 11: "listopada", 12: "grudnia",
+    }
+    expected_date = f"z dnia {today.day} {polish_months[today.month]} {today.year} r."
+    for candidate_pos in range(latest_position + 1, latest_position + 8):
+        pdf_url = pdf_url_for_notice(today.year, candidate_pos)
+        try:
+            pdf_text = get_pdf_text(pdf_url)
+        except HTTPError as exc:
+            if exc.code == 404:
+                continue
+            raise
+        except Exception as exc:
+            print(f"Nie udało się sprawdzić PDF pozycji {candidate_pos}: {exc}")
+            continue
 
-    matches.sort(key=lambda item: item.get("pos", 0), reverse=True)
-    return matches[0]
+        normalized = " ".join(pdf_text.casefold().split())
+        if "maksymalnej ceny paliw ciekłych na stacji paliw" not in normalized:
+            continue
+        if expected_date not in normalized:
+            print(f"Pozycja {candidate_pos} to obwieszczenie paliwowe, ale z inną datą niż {today.isoformat()}.")
+            continue
+
+        print(f"Znaleziono dzisiejsze obwieszczenie w oficjalnym PDF: M.P. {today.year} poz. {candidate_pos}.")
+        return {
+            "year": today.year,
+            "pos": candidate_pos,
+            "promulgation": today.isoformat(),
+            "announcementDate": today.isoformat(),
+            "title": "Obwieszczenie Ministra Energii w sprawie maksymalnej ceny paliw ciekłych na stacji paliw",
+            "displayAddress": f"M.P. {today.year} poz. {candidate_pos}",
+            "ELI": f"MP/{today.year}/{candidate_pos}",
+            "_document_text": pdf_text,
+        }
+
+    print(f"Nie znaleziono obwieszczenia CPN z datą {today.isoformat()} w API ani w kolejnych pozycjach PDF.")
+    return None
+
+
 def extract_pb95_gross(document_text):
     normalized = " ".join(document_text.replace("\xa0", " ").split())
     # Wycinamy wyłącznie punkt dotyczący benzyny 95, aż do punktu dla PB98.
@@ -187,8 +268,14 @@ def main():
 
     year = notice["year"]
     position = notice["pos"]
-    document_url = f"{API_BASE}/acts/MP/{year}/{position}/text.html"
-    document_text = get_text(document_url)
+    document_text = notice.get("_document_text")
+    if not document_text:
+        document_url = f"{API_BASE}/acts/MP/{year}/{position}/text.html"
+        try:
+            document_text = get_text(document_url)
+        except Exception as exc:
+            print(f"Nie udało się pobrać wersji HTML ({exc}); próbuję oficjalny PDF.")
+            document_text = get_pdf_text(pdf_url_for_notice(year, position))
     price = extract_pb95_gross(document_text)
 
     state = load_state()
@@ -227,7 +314,7 @@ def main():
         f"{change_line}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "Źródło: Monitor Polski – obwieszczenie Ministra Energii\n"
-        f"https://monitorpolski.gov.pl/{notice.get('address', '')}.pdf"
+        f"https://www.monitorpolski.gov.pl/MP/{year}/{position}"
     )
 
     # Najpierw wysyłka, dopiero potem zapis stanu – awaria Telegrama nie zgubi powiadomienia.
