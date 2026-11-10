@@ -1,29 +1,68 @@
 import html
-import io
-import socket
-import time
 import json
 import os
 import re
-import sys
-from datetime import datetime, timedelta
-from http.client import RemoteDisconnected
+import socket
+import time
+from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urljoin
 from urllib.request import Request, urlopen
-from pypdf import PdfReader
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Europe/Warsaw")
 STATE_FILE = Path("paliwo_seen.json")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-API_BASE = "https://api.sejm.gov.pl/eli"
+NEWS_URL = "https://www.gov.pl/web/energia/wiadomosci?size=50"
+GOV_BASE = "https://www.gov.pl"
 
 
-class TextExtractor(HTMLParser):
+class LinkParser(HTMLParser):
+    """Extract ordinary links from the Ministry's news listing."""
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self.href = None
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.href = dict(attrs).get("href")
+            self.parts = []
+
+    def handle_data(self, data):
+        if self.href:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.href:
+            self.links.append((self.href, " ".join(self.parts).strip()))
+            self.href = None
+            self.parts = []
+
+
+class MetadataParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.values = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "meta":
+            key = (attrs.get("property") or attrs.get("name") or "").casefold()
+            if key in {
+                "article:published_time", "date", "datepublished",
+                "dcterms.created", "dcterms.date",
+            } and attrs.get("content"):
+                self.values.append(attrs["content"])
+        elif tag == "time" and attrs.get("datetime"):
+            self.values.append(attrs["datetime"])
+
+
+class TextParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.parts = []
@@ -32,18 +71,25 @@ class TextExtractor(HTMLParser):
         self.parts.append(data)
 
     def get_text(self):
-        return " ".join(self.parts)
+        return html.unescape(" ".join(self.parts))
 
 
-def fetch_bytes(url, accept="*/*"):
-    """GET with retries for temporary disconnects and HTTP 5xx/429 responses."""
+def fetch_bytes(url, accept="text/html,application/xhtml+xml,*/*"):
+    """GET with retries for transient disconnects and HTTP 5xx/429 responses."""
     retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
     last_error = None
     for attempt in range(1, 6):
-        request = Request(url, headers={"Accept": accept, "User-Agent": "PB95-price-notifier/1.0"})
+        request = Request(
+            url,
+            headers={
+                "Accept": accept,
+                "User-Agent": "Mozilla/5.0 (compatible; PB95-price-notifier/1.0)",
+                "Cache-Control": "no-cache",
+            },
+        )
         try:
             with urlopen(request, timeout=40) as response:
-                return response.read()
+                return response.read(), response.geturl()
         except HTTPError as exc:
             if exc.code not in retryable_statuses or attempt == 5:
                 raise
@@ -58,157 +104,142 @@ def fetch_bytes(url, accept="*/*"):
     raise RuntimeError(f"Nie udało się pobrać {url}: {last_error}")
 
 
-def get_json(url):
-    raw = fetch_bytes(url, "application/json")
-    return json.loads(raw.decode("utf-8"))
-
-
-def get_text(url):
-    raw = fetch_bytes(url, "text/html,application/xhtml+xml,*/*")
-    parser = TextExtractor()
-    parser.feed(raw.decode("utf-8", errors="replace"))
-    return html.unescape(parser.get_text())
-
-
-def get_pdf_text(url):
-    raw = fetch_bytes(url, "application/pdf,*/*")
-    reader = PdfReader(io.BytesIO(raw))
-    text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    if len(text.strip()) < 80:
-        raise ValueError("PDF nie zawiera wystarczającej ilości tekstu do odczytu.")
-    return text
-
-
-def pdf_url_for_notice(year, position):
-    # Oficjalny endpoint ELI dla tekstu aktu w PDF.
-    return f"{API_BASE}/acts/MP/{year}/{position}/text.pdf"
-
-
-def latest_todays_notice(today):
-    # Najpierw sprawdzamy oficjalne API ELI po dacie publikacji.
-    params = urlencode({
-        "publisher": "MP",
-        "year": today.year,
-        "title": "maksymalnej ceny paliw",
-        "pubDateFrom": today.isoformat(),
-        "pubDateTo": today.isoformat(),
-        "limit": 100,
-    })
-    items = []
-    try:
-        data = get_json(f"{API_BASE}/acts/search?{params}")
-        items = data.get("items", [])
-        print(f"ELI search: {len(items)} wyników.")
-    except Exception as exc:
-        print(f"ELI search chwilowo niedostępne: {exc}. Przechodzę do rocznej listy aktów.")
-
-    def filter_today(records):
-        return [
-            item for item in records
-            if "maksymalnej ceny paliw" in item.get("title", "").casefold()
-            and item.get("promulgation") == today.isoformat()
-        ]
-
-    matches = filter_today(items)
-    annual_items = []
-    if not matches:
-        print("Wyszukiwarka nie zwróciła dzisiejszego aktu – sprawdzam roczną listę MP.")
+def parse_date(value):
+    if not value:
+        return None
+    value = str(value).strip()
+    iso = re.search(r"(?<!\\d)(20\\d{2}-\\d{2}-\\d{2})", value)
+    if iso:
         try:
-            annual = get_json(f"{API_BASE}/acts/MP/{today.year}")
-            annual_items = annual.get("items", [])
-            print(f"ELI annual list: {len(annual_items)} aktów; totalCount={annual.get('totalCount', '?')}.")
-            matches = filter_today(annual_items)
-        except Exception as exc:
-            print(f"ELI annual list chwilowo niedostępna: {exc}. Spróbuję sprawdzić numerację PDF na podstawie ostatnio znanej pozycji.")
-            annual_items = []
-
-    if matches:
-        matches.sort(key=lambda item: item.get("pos", 0), reverse=True)
-        for item in matches:
-            print(
-                "Znalezione obwieszczenie:", item.get("displayAddress"),
-                "| data publikacji:", item.get("promulgation"),
-                "| data wydania:", item.get("announcementDate"),
-            )
-        return matches[0]
-
-    # API sejm.gov.pl może mieć opóźnienie względem publikacji na stronie ELI.
-    # Sprawdzamy kilka kolejnych numerów pozycji bezpośrednio w oficjalnym repozytorium PDF.
-    latest_position = max((item.get("pos", 0) for item in annual_items), default=1120)
-    polish_months = {
-        1: "stycznia", 2: "lutego", 3: "marca", 4: "kwietnia",
-        5: "maja", 6: "czerwca", 7: "lipca", 8: "sierpnia",
-        9: "września", 10: "października", 11: "listopada", 12: "grudnia",
-    }
-    expected_date = f"z dnia {today.day} {polish_months[today.month]} {today.year} r."
-    for candidate_pos in range(latest_position + 1, latest_position + 8):
-        pdf_url = pdf_url_for_notice(today.year, candidate_pos)
+            return date.fromisoformat(iso.group(1))
+        except ValueError:
+            pass
+    polish = re.search(r"(?<!\\d)(\\d{1,2})[./-](\\d{1,2})[./-](20\\d{2})(?!\\d)", value)
+    if polish:
         try:
-            pdf_text = get_pdf_text(pdf_url)
-        except HTTPError as exc:
-            if exc.code == 404:
-                continue
-            raise
-        except Exception as exc:
-            print(f"Nie udało się sprawdzić PDF pozycji {candidate_pos}: {exc}")
-            continue
-
-        normalized = " ".join(pdf_text.casefold().split())
-        if "maksymalnej ceny paliw ciekłych na stacji paliw" not in normalized:
-            continue
-        if expected_date not in normalized:
-            print(f"Pozycja {candidate_pos} to obwieszczenie paliwowe, ale z inną datą niż {today.isoformat()}.")
-            continue
-
-        print(f"Znaleziono dzisiejsze obwieszczenie w oficjalnym PDF: M.P. {today.year} poz. {candidate_pos}.")
-        return {
-            "year": today.year,
-            "pos": candidate_pos,
-            "promulgation": today.isoformat(),
-            "announcementDate": today.isoformat(),
-            "title": "Obwieszczenie Ministra Energii w sprawie maksymalnej ceny paliw ciekłych na stacji paliw",
-            "displayAddress": f"M.P. {today.year} poz. {candidate_pos}",
-            "ELI": f"MP/{today.year}/{candidate_pos}",
-            "_document_text": pdf_text,
-        }
-
-    print(f"Nie znaleziono obwieszczenia CPN z datą {today.isoformat()} w API ani w kolejnych pozycjach PDF.")
+            return date(int(polish.group(3)), int(polish.group(2)), int(polish.group(1)))
+        except ValueError:
+            pass
     return None
 
 
-def extract_pb95_gross(document_text):
-    normalized = " ".join(document_text.replace("\xa0", " ").split())
-    # Wycinamy wyłącznie punkt dotyczący benzyny 95, aż do punktu dla PB98.
-    start = re.search(
-        r"benzyny?\s+silnikowej\s+bezołowiowej\s+95",
-        normalized,
+def parse_article(url):
+    raw, final_url = fetch_bytes(url)
+    source = raw.decode("utf-8", errors="replace")
+
+    meta = MetadataParser()
+    meta.feed(source)
+    published = None
+    for candidate in meta.values:
+        published = parse_date(candidate)
+        if published:
+            break
+
+    parser = TextParser()
+    parser.feed(source)
+    article_text = " ".join(parser.get_text().split())
+
+    if not published:
+        # On Gov.pl the publication date appears immediately below the article title.
+        published = parse_date(article_text)
+    if not published:
+        # JSON-LD datePublished is used as a final date fallback.
+        match = re.search(r'"datePublished"\\s*:\\s*"([^"]+)"', source, flags=re.IGNORECASE)
+        if match:
+            published = parse_date(match.group(1))
+    if not published:
+        raise ValueError(f"Nie udało się ustalić daty publikacji artykułu: {final_url}")
+
+    price_match = re.search(
+        r"benzyna\\s*95\\s*[-–—:]\\s*(\\d{1,2}[,.]\\d{2})\\s*zł\\s*/\\s*l",
+        article_text,
         flags=re.IGNORECASE,
     )
-    if not start:
-        raise ValueError("Nie znaleziono w obwieszczeniu sekcji dotyczącej benzyny 95.")
+    if not price_match:
+        raise ValueError(f"Artykuł z {published.isoformat()} nie zawiera czytelnej ceny PB95: {final_url}")
 
-    rest = normalized[start.start():]
-    next_section = re.search(
-        r"\b2\s*[.)]\s*dla\s+benzyny?\s+silnikowej\s+bezołowiowej\s+98",
-        rest,
-        flags=re.IGNORECASE,
+    price = float(price_match.group(1).replace(",", "."))
+    if not (3.0 <= price <= 15.0):
+        raise ValueError(f"Odczytana cena PB95 wygląda nieprawidłowo: {price:.2f} zł/l")
+
+    return {
+        "published": published,
+        "price": round(price, 2),
+        "url": final_url,
+        "title": final_url.rstrip("/").rsplit("/", 1)[-1],
+    }
+
+
+def fetch_recent_price_announcements():
+    raw, _ = fetch_bytes(NEWS_URL)
+    listing = LinkParser()
+    listing.feed(raw.decode("utf-8", errors="replace"))
+
+    candidates = []
+    seen = set()
+    for href, label in listing.links:
+        absolute = urljoin(GOV_BASE, href)
+        if "/web/energia/" not in absolute:
+            continue
+        if "maksymalna-cena-detaliczna-paliw" not in absolute.casefold():
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        candidates.append(absolute)
+
+    if not candidates:
+        raise RuntimeError(
+            "Strona aktualności Ministerstwa Energii nie zwróciła linków do komunikatów o maksymalnych cenach paliw."
+        )
+
+    announcements = []
+    errors = []
+    # The first few entries include the newest daily notice and previous price for comparison.
+    for url in candidates[:8]:
+        try:
+            announcements.append(parse_article(url))
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+            print(f"Pomijam nieczytelny komunikat: {exc}")
+
+    if not announcements:
+        raise RuntimeError("Nie udało się odczytać żadnego komunikatu o cenie paliw. " + " | ".join(errors))
+
+    announcements.sort(key=lambda item: item["published"], reverse=True)
+    return announcements
+
+
+def latest_todays_notice(today):
+    announcements = fetch_recent_price_announcements()
+    current = next((item for item in announcements if item["published"] == today), None)
+    if not current:
+        newest_date = announcements[0]["published"]
+        print(
+            f"Brak komunikatu Ministerstwa Energii opublikowanego dzisiaj ({today.isoformat()}). "
+            f"Najnowszy znaleziony komunikat jest z {newest_date.isoformat()}."
+        )
+        return None
+
+    previous = next(
+        (item for item in announcements if item["published"] < current["published"]),
+        None,
     )
-    section = rest[:next_section.start()] if next_section else rest[:700]
-
-    # W obwieszczeniu lit. a) to cena bez VAT, a lit. b) – cena brutto.
-    gross = re.search(
-        r"b\s*[.)].{0,180}?powiększona\s+o\s+podatek.{0,100}?wynosi\s+(\d+[,.]\d{2})\s*zł",
-        section,
-        flags=re.IGNORECASE,
+    current["previous_price"] = previous["price"] if previous else None
+    current["promulgation"] = current["published"].isoformat()
+    current["year"] = current["published"].year
+    current["pos"] = None
+    print(
+        f"Znaleziono oficjalny komunikat Ministerstwa Energii z {current['published'].isoformat()}: "
+        f"PB95 {current['price']:.2f} zł/l."
     )
-    if gross:
-        return float(gross.group(1).replace(",", "."))
+    if previous:
+        print(
+            f"Poprzedni komunikat ({previous['published'].isoformat()}): "
+            f"PB95 {previous['price']:.2f} zł/l."
+        )
+    return current
 
-    # Awaryjnie: z dwóch kwot w punkcie PB95 wybierz drugą (brutto).
-    prices = re.findall(r"(\d+[,.]\d{2})\s*zł", section, flags=re.IGNORECASE)
-    if len(prices) >= 2:
-        return float(prices[1].replace(",", "."))
-    raise ValueError("Nie udało się odczytać ceny brutto PB95 z obwieszczenia.")
 
 def load_state():
     if not STATE_FILE.exists():
@@ -220,15 +251,15 @@ def load_state():
 
 
 def save_state(state):
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
 
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
         raise RuntimeError("Brakuje sekretów BOT_TOKEN lub CHAT_ID w GitHub Actions.")
-    import urllib.parse
+    from urllib.parse import urlencode
 
-    payload = urllib.parse.urlencode({
+    payload = urlencode({
         "chat_id": CHAT_ID,
         "text": message,
         "disable_web_page_preview": "true",
@@ -247,94 +278,89 @@ def send_telegram(message):
 
 def main():
     now = datetime.now(TZ)
-    manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    event = os.environ.get("GITHUB_EVENT_NAME", "")
+    check_only = os.environ.get("CHECK_ONLY", "").casefold() == "true"
+    manual = event == "workflow_dispatch"
 
-    # Dwa wywołania cron (14:30 i 15:30 UTC) obsługują czas letni i zimowy.
-    # Pracujemy tylko o 16:30 czasu polskiego; ręczne uruchomienie omija ten warunek.
-    if not manual and not (now.hour == 16 and 25 <= now.minute <= 59):
-        print(f"Poza oknem wysyłki (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
+    # Cron is scheduled twice in UTC to cover CET/CEST. Only 16:30 in Warsaw proceeds.
+    if not (manual or check_only) and not (now.hour == 16 and 25 <= now.minute <= 59):
+        print(f"Poza oknem sprawdzania (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
         return
 
     today = now.date()
-    print(f"Sprawdzam obwieszczenie Monitora Polskiego z dnia {today.isoformat()}.")
-
+    print(f"Sprawdzam oficjalny komunikat Ministerstwa Energii z dnia {today.isoformat()}.")
     notice = latest_todays_notice(today)
     if not notice:
-        print("Brak nowego obwieszczenia CPN z dzisiejszą datą.")
-        if manual:
-            # Ręczne uruchomienie służy też do sprawdzenia Telegrama i sekretów.
-            send_telegram(
-                "🧪 TEST TELEGRAMA – BOT PB95\n"
-                "Skrypt uruchomił się poprawnie i dotarł do funkcji wysyłającej.\n"
-                "Nie znaleziono jeszcze nowego obwieszczenia w Monitorze Polskim.\n"
-                "To wiadomość diagnostyczna, nie powiadomienie o nowej cenie."
-            )
-            print("Wysłano diagnostyczny test Telegrama (uruchomienie ręczne).")
-        else:
-            print("Uruchomienie automatyczne: brak powiadomienia.")
         return
 
-    year = notice["year"]
-    position = notice["pos"]
-    document_text = notice.get("_document_text")
-    if not document_text:
-        document_url = f"{API_BASE}/acts/MP/{year}/{position}/text.html"
-        try:
-            document_text = get_text(document_url)
-        except Exception as exc:
-            print(f"Nie udało się pobrać wersji HTML ({exc}); próbuję oficjalny PDF.")
-            document_text = get_pdf_text(pdf_url_for_notice(year, position))
-    price = extract_pb95_gross(document_text)
+    price = notice["price"]
+    notice_id = notice["url"]
+    effective_date = notice["published"] + timedelta(days=1)
+
+    if check_only:
+        print(
+            f"TEST BEZ WYSYŁKI: PB95 {price:.2f} zł/l; "
+            f"poprzednia cena: {notice.get('previous_price')}; "
+            f"obowiązuje od {effective_date.isoformat()}; źródło: {notice_id}"
+        )
+        return
 
     state = load_state()
     previous_price = state.get("last_price")
-    notice_id = notice.get("ELI") or notice.get("displayAddress")
-
-    # Powiadamiamy o każdym nowym obwieszczeniu, nawet jeśli cena liczbowa się nie zmieniła.
-    if notice_id and notice_id == state.get("last_notice"):
-        print("To obwieszczenie zostało już obsłużone. Bez powiadomienia.")
-        return
-
-    # Nowe obwieszczenie z identyczną ceną nie wymaga alertu, ale zapisujemy jego ID.
-    if previous_price is not None and round(float(previous_price), 2) == round(price, 2):
-        state["last_notice"] = notice_id
-        state["last_checked_at"] = now.isoformat()
-        save_state(state)
-        print(f"Nowe obwieszczenie, ale PB95 bez zmiany ({price:.2f} zł/l). Bez powiadomienia.")
-        return
-    effective_date = datetime.fromisoformat(notice["promulgation"]).date() + timedelta(days=1)
     if previous_price is None:
-        change_line = "Pierwsza odczytana cena w monitoringu."
+        previous_price = notice.get("previous_price")
+
+    if notice_id == state.get("last_notice"):
+        print("Ten komunikat został już obsłużony. Bez powiadomienia.")
+        return
+
+    if previous_price is None:
+        # First successful run: establish a safe baseline rather than sending a false alert.
+        save_state({
+            "last_price": price,
+            "last_notice": notice_id,
+            "last_checked_at": now.isoformat(),
+            "effective_from": effective_date.isoformat(),
+        })
+        print(f"Zapisano cenę bazową PB95 {price:.2f} zł/l. Bez powiadomienia.")
+        return
+
+    difference = round(price - float(previous_price), 2)
+    if difference == 0:
+        save_state({
+            "last_price": price,
+            "last_notice": notice_id,
+            "last_checked_at": now.isoformat(),
+            "effective_from": effective_date.isoformat(),
+        })
+        print(f"PB95 bez zmiany ({price:.2f} zł/l). Bez powiadomienia.")
+        return
+
+    if difference > 0:
+        change_line = f"▲ Drożej o {difference:.2f} zł/l"
     else:
-        difference = price - float(previous_price)
-        if difference > 0:
-            change_line = f"▲ Drożej o {difference:.2f} zł/l"
-        elif difference < 0:
-            change_line = f"▼ Taniej o {abs(difference):.2f} zł/l"
-        else:
-            change_line = "Cena bez zmian względem poprzedniego obwieszczenia."
+        change_line = f"▼ Taniej o {abs(difference):.2f} zł/l"
 
     message = (
-        "⛽ NOWA CENA PALIWA – PB95\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"📅 Obowiązuje od: {effective_date:%d.%m.%Y}\n"
-        f"💰 Cena maksymalna: {price:.2f} zł/l\n"
-        f"{change_line}\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "Źródło: Monitor Polski – obwieszczenie Ministra Energii\n"
-        f"https://www.monitorpolski.gov.pl/MP/{year}/{position}"
+        "⛽ ZMIANA MAKSYMALNEJ CENY PALIWA – PB95\\n"
+        "━━━━━━━━━━━━━━━━━━\\n"
+        f"📅 Obowiązuje od: {effective_date:%d.%m.%Y}\\n"
+        f"💰 Nowa cena maksymalna: {price:.2f} zł/l\\n"
+        f"{change_line} (poprzednio {float(previous_price):.2f} zł/l)\\n"
+        "━━━━━━━━━━━━━━━━━━\\n"
+        "Źródło: Ministerstwo Energii\\n"
+        f"{notice_id}"
     )
 
-    # Najpierw wysyłka, dopiero potem zapis stanu – awaria Telegrama nie zgubi powiadomienia.
+    # Save only after Telegram confirms delivery, so a temporary Telegram outage cannot lose an alert.
     send_telegram(message)
-    state = {
-        "last_price": round(price, 2),
+    save_state({
+        "last_price": price,
         "last_notice": notice_id,
         "sent_at": now.isoformat(),
         "effective_from": effective_date.isoformat(),
-    }
-    save_state(state)
-    print(f"Wysłano PB95 {price:.2f} zł/l, obowiązuje od {effective_date.isoformat()}.")
+    })
+    print(f"Wysłano powiadomienie: PB95 {price:.2f} zł/l, od {effective_date.isoformat()}.")
 
 
 if __name__ == "__main__":
