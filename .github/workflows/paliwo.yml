@@ -1,6 +1,13 @@
 name: PB95 CPN price notifier
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "paliwo.py"
+      - ".github/workflows/paliwo.yml"
+      - "requirements.txt"
   schedule:
     # GitHub may delay scheduled jobs. Retry every 10 minutes around the target time;
     # paliwo.py ignores runs before 16:25 Warsaw time and safely ignores duplicates.
@@ -36,7 +43,6 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          CHECK_ONLY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: python paliwo.py
 
       - name: Save notification state
