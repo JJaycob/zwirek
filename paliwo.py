@@ -212,25 +212,21 @@ def fetch_recent_price_announcements():
 
 def latest_todays_notice(today):
     announcements = fetch_recent_price_announcements()
-    current = next((item for item in announcements if item["published"] == today), None)
-    if not current:
-        newest_date = announcements[0]["published"]
-        print(
-            f"Brak komunikatu Ministerstwa Energii opublikowanego dzisiaj ({today.isoformat()}). "
-            f"Najnowszy znaleziony komunikat jest z {newest_date.isoformat()}."
-        )
+    eligible = [item for item in announcements if item["published"] <= today]
+    if not eligible:
+        print(f"Nie znaleziono komunikatu paliwowego opublikowanego najpóźniej {today.isoformat()}.")
         return None
 
-    previous = next(
-        (item for item in announcements if item["published"] < current["published"]),
-        None,
-    )
+    # Process the newest available official notice even when GitHub starts the job late.
+    # This lets a delayed scheduled run catch up instead of silently missing a price change.
+    current = eligible[0]
+    previous = eligible[1] if len(eligible) > 1 else None
     current["previous_price"] = previous["price"] if previous else None
     current["promulgation"] = current["published"].isoformat()
     current["year"] = current["published"].year
     current["pos"] = None
     print(
-        f"Znaleziono oficjalny komunikat Ministerstwa Energii z {current['published'].isoformat()}: "
+        f"Najnowszy oficjalny komunikat Ministerstwa Energii: {current['published'].isoformat()}, "
         f"PB95 {current['price']:.2f} zł/l."
     )
     if previous:
@@ -282,9 +278,10 @@ def main():
     check_only = os.environ.get("CHECK_ONLY", "").casefold() == "true"
     manual = event == "workflow_dispatch"
 
-    # Cron is scheduled twice in UTC to cover CET/CEST. Only 16:30 in Warsaw proceeds.
-    if not (manual or check_only) and not (now.hour == 16 and 25 <= now.minute <= 59):
-        print(f"Poza oknem sprawdzania (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
+    # Run no earlier than 16:25 in Warsaw. If GitHub delays the scheduled job,
+    # later runs may still process the newest notice and catch up without duplicates.
+    if not (manual or check_only) and (now.hour < 16 or (now.hour == 16 and now.minute < 25)):
+        print(f"Za wcześnie na sprawdzenie (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
         return
 
     today = now.date()
