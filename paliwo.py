@@ -123,6 +123,77 @@ def parse_date(value):
     return None
 
 
+MONTHS = {
+    "stycznia": 1,
+    "lutego": 2,
+    "marca": 3,
+    "kwietnia": 4,
+    "maja": 5,
+    "czerwca": 6,
+    "lipca": 7,
+    "sierpnia": 8,
+    "września": 9,
+    "października": 10,
+    "listopada": 11,
+    "grudnia": 12,
+}
+MONTH_PATTERN = "(?:" + "|".join(re.escape(name) for name in MONTHS) + ")"
+
+
+def parse_polish_month_date(day, month_name, year):
+    return date(int(year), MONTHS[month_name.casefold()], int(day))
+
+
+def extract_validity_period(text, url):
+    """Read the explicit validity dates from the Ministry article headline/body."""
+    normalized = " ".join(text.replace("\\xa0", " ").split()).casefold()
+
+    # A range crossing a month boundary, e.g. 31 października - 2 listopada 2026 r.
+    cross_month = re.search(
+        rf"(?<!\\d)(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s*[-–—]\\s*"
+        rf"(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+        normalized,
+    )
+    if cross_month:
+        start = parse_polish_month_date(cross_month.group(1), cross_month.group(2), cross_month.group(5))
+        end = parse_polish_month_date(cross_month.group(3), cross_month.group(4), cross_month.group(5))
+        return start, end
+
+    # A range within one month, e.g. w dniach 11-12 listopada 2026 r.
+    same_month = re.search(
+        rf"(?<!\\d)(\\d{{1,2}})\\s*[-–—]\\s*(\\d{{1,2}})\\s+"
+        rf"({MONTH_PATTERN})\\s+(20\\d{{2}})",
+        normalized,
+    )
+    if same_month:
+        start = parse_polish_month_date(same_month.group(1), same_month.group(3), same_month.group(4))
+        end = parse_polish_month_date(same_month.group(2), same_month.group(3), same_month.group(4))
+        return start, end
+
+    # A single-day notice, e.g. "obowiązująca 10 listopada 2026 r."
+    single_day = re.search(
+        rf"obowiązuj[a-ząćęłńóśźż]*\\s+(?:w\\s+dniu\\s+)?"
+        rf"(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+        normalized,
+    )
+    if single_day:
+        day = parse_polish_month_date(single_day.group(1), single_day.group(2), single_day.group(3))
+        return day, day
+
+    # Numeric date ranges are used in some older Ministry notices.
+    numeric_range = re.search(
+        r"(?<!\\d)(\\d{1,2})[./](\\d{1,2})\\s*[-–—]\\s*"
+        r"(\\d{1,2})[./](\\d{1,2})\\s+(20\\d{2})",
+        normalized,
+    )
+    if numeric_range:
+        start = date(int(numeric_range.group(5)), int(numeric_range.group(2)), int(numeric_range.group(1)))
+        end = date(int(numeric_range.group(5)), int(numeric_range.group(4)), int(numeric_range.group(3)))
+        return start, end
+
+    raise ValueError(f"Nie udało się odczytać okresu obowiązywania ceny w komunikacie: {url}")
+
+
 def parse_article(url):
     raw, final_url = fetch_bytes(url)
     source = raw.decode("utf-8", errors="replace")
@@ -162,9 +233,13 @@ def parse_article(url):
     if not (3.0 <= price <= 15.0):
         raise ValueError(f"Odczytana cena PB95 wygląda nieprawidłowo: {price:.2f} zł/l")
 
+    effective_from, effective_to = extract_validity_period(article_text, final_url)
+
     return {
         "published": published,
         "price": round(price, 2),
+        "effective_from": effective_from,
+        "effective_to": effective_to,
         "url": final_url,
         "title": final_url.rstrip("/").rsplit("/", 1)[-1],
     }
@@ -210,31 +285,16 @@ def fetch_recent_price_announcements():
     return announcements
 
 
-def latest_todays_notice(today):
-    announcements = fetch_recent_price_announcements()
-    eligible = [item for item in announcements if item["published"] <= today]
-    if not eligible:
-        print(f"Nie znaleziono komunikatu paliwowego opublikowanego najpóźniej {today.isoformat()}.")
+def find_applicable_notice(announcements, target_date):
+    applicable = [
+        item for item in announcements
+        if item["effective_from"] <= target_date <= item["effective_to"]
+    ]
+    if not applicable:
         return None
-
-    # Process the newest available official notice even when GitHub starts the job late.
-    # This lets a delayed scheduled run catch up instead of silently missing a price change.
-    current = eligible[0]
-    previous = eligible[1] if len(eligible) > 1 else None
-    current["previous_price"] = previous["price"] if previous else None
-    current["promulgation"] = current["published"].isoformat()
-    current["year"] = current["published"].year
-    current["pos"] = None
-    print(
-        f"Najnowszy oficjalny komunikat Ministerstwa Energii: {current['published'].isoformat()}, "
-        f"PB95 {current['price']:.2f} zł/l."
-    )
-    if previous:
-        print(
-            f"Poprzedni komunikat ({previous['published'].isoformat()}): "
-            f"PB95 {previous['price']:.2f} zł/l."
-        )
-    return current
+    # Prefer the newest official notice if the Ministry has published overlapping corrections.
+    applicable.sort(key=lambda item: item["published"], reverse=True)
+    return applicable[0]
 
 
 def load_state():
@@ -274,91 +334,85 @@ def send_telegram(message):
 
 def main():
     now = datetime.now(TZ)
-    event = os.environ.get("GITHUB_EVENT_NAME", "")
-    check_only = os.environ.get("CHECK_ONLY", "").casefold() == "true"
-    manual = event == "workflow_dispatch"
+    manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
-    # Run no earlier than 16:25 in Warsaw. If GitHub delays the scheduled job,
-    # later runs may still process the newest notice and catch up without duplicates.
-    if not (manual or check_only) and (now.hour < 16 or (now.hour == 16 and now.minute < 25)):
-        print(f"Za wcześnie na sprawdzenie (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
+    # Scheduled checks begin at 16:25 Warsaw time. Late GitHub starts can still catch up.
+    if not manual and (now.hour < 16 or (now.hour == 16 and now.minute < 25)):
+        print(f"Za wcześnie na raport (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
         return
 
     today = now.date()
-    print(f"Sprawdzam oficjalny komunikat Ministerstwa Energii z dnia {today.isoformat()}.")
-    notice = latest_todays_notice(today)
-    if not notice:
-        return
+    tomorrow = today + timedelta(days=1)
+    print(
+        f"Sprawdzam oficjalne ceny PB95 na dziś ({today.isoformat()}) "
+        f"i jutro ({tomorrow.isoformat()})."
+    )
 
-    price = notice["price"]
-    notice_id = notice["url"]
-    effective_date = notice["published"] + timedelta(days=1)
+    announcements = fetch_recent_price_announcements()
+    today_notice = find_applicable_notice(announcements, today)
+    tomorrow_notice = find_applicable_notice(announcements, tomorrow)
 
-    if check_only:
-        print(
-            f"TEST BEZ WYSYŁKI: PB95 {price:.2f} zł/l; "
-            f"poprzednia cena: {notice.get('previous_price')}; "
-            f"obowiązuje od {effective_date.isoformat()}; źródło: {notice_id}"
+    if today_notice is None:
+        raise RuntimeError(
+            f"Nie znalazłem oficjalnego komunikatu określającego cenę PB95 na dziś ({today.isoformat()}). "
+            "Nie wysyłam raportu z niepotwierdzonym porównaniem."
         )
-        return
+    if tomorrow_notice is None:
+        raise RuntimeError(
+            f"Ministerstwo nie opublikowało jeszcze komunikatu obejmującego jutro ({tomorrow.isoformat()}). "
+            "Ponowię sprawdzenie przy kolejnym uruchomieniu."
+        )
+
+    today_price = today_notice["price"]
+    tomorrow_price = tomorrow_notice["price"]
+    difference = round(tomorrow_price - today_price, 2)
+
+    print(
+        f"PB95 dziś: {today_price:.2f} zł/l ({today_notice['effective_from']}–{today_notice['effective_to']}); "
+        f"jutro: {tomorrow_price:.2f} zł/l "
+        f"({tomorrow_notice['effective_from']}–{tomorrow_notice['effective_to']})."
+    )
 
     state = load_state()
-    previous_price = state.get("last_price")
-    if previous_price is None:
-        previous_price = notice.get("previous_price")
-
-    if notice_id == state.get("last_notice"):
-        print("Ten komunikat został już obsłużony. Bez powiadomienia.")
-        return
-
-    if previous_price is None:
-        # First successful run: establish a safe baseline rather than sending a false alert.
-        save_state({
-            "last_price": price,
-            "last_notice": notice_id,
-            "last_checked_at": now.isoformat(),
-            "effective_from": effective_date.isoformat(),
-        })
-        print(f"Zapisano cenę bazową PB95 {price:.2f} zł/l. Bez powiadomienia.")
-        return
-
-    difference = round(price - float(previous_price), 2)
-    if difference == 0:
-        save_state({
-            "last_price": price,
-            "last_notice": notice_id,
-            "last_checked_at": now.isoformat(),
-            "effective_from": effective_date.isoformat(),
-        })
-        print(f"PB95 bez zmiany ({price:.2f} zł/l). Bez powiadomienia.")
+    report_for = tomorrow.isoformat()
+    if state.get("last_report_for") == report_for:
+        print(f"Raport dla {tomorrow.isoformat()} został już wysłany. Pomijam duplikat.")
         return
 
     if difference > 0:
-        change_line = f"▲ Drożej o {difference:.2f} zł/l"
+        change_line = f"📈 Wzrost o {difference:.2f} zł/l względem dzisiaj ({today_price:.2f} zł/l)."
+    elif difference < 0:
+        change_line = f"📉 Spadek o {abs(difference):.2f} zł/l względem dzisiaj ({today_price:.2f} zł/l)."
     else:
-        change_line = f"▼ Taniej o {abs(difference):.2f} zł/l"
+        change_line = f"➖ Bez zmian względem dzisiaj ({today_price:.2f} zł/l)."
 
     message = (
-        "⛽ ZMIANA MAKSYMALNEJ CENY PALIWA – PB95\n"
+        "⛽ MAKSYMALNA CENA PALIWA – PB95\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"📅 Obowiązuje od: {effective_date:%d.%m.%Y}\n"
-        f"💰 Nowa cena maksymalna: {price:.2f} zł/l\n"
-        f"{change_line} (poprzednio {float(previous_price):.2f} zł/l)\n"
+        f"📅 Cena na jutro: {tomorrow:%d.%m.%Y}\n"
+        f"💰 {tomorrow_price:.2f} zł/l\n"
+        f"{change_line}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "Źródło: Ministerstwo Energii\n"
-        f"{notice_id}"
+        f"{tomorrow_notice['url']}"
     )
 
-    # Save only after Telegram confirms delivery, so a temporary Telegram outage cannot lose an alert.
+    # Save the report date only after Telegram confirms delivery.
     send_telegram(message)
     save_state({
-        "last_price": price,
-        "last_notice": notice_id,
+        "last_price": tomorrow_price,
+        "last_notice": tomorrow_notice["url"],
+        "last_report_for": report_for,
+        "last_report_price": tomorrow_price,
+        "reported_today_price": today_price,
         "sent_at": now.isoformat(),
-        "effective_from": effective_date.isoformat(),
+        "effective_from": tomorrow_notice["effective_from"].isoformat(),
+        "effective_to": tomorrow_notice["effective_to"].isoformat(),
     })
-    print(f"Wysłano powiadomienie: PB95 {price:.2f} zł/l, od {effective_date.isoformat()}.")
-
+    print(
+        f"Wysłano dzienny raport PB95 na {tomorrow.isoformat()}: "
+        f"{tomorrow_price:.2f} zł/l; zmiana {difference:+.2f} zł/l."
+    )
 
 if __name__ == "__main__":
     main()
