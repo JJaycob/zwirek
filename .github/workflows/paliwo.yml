@@ -36,8 +36,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Validate Python syntax
-        run: python -m py_compile paliwo.py
+      - name: Validate Python syntax and date parser
+        run: |
+          python -m py_compile paliwo.py
+          python - <<'PY'
+          import paliwo
+          from datetime import date
+          cases = [
+              ("obowiązująca w dniach 11-12 listopada 2026 r.", date(2026, 11, 11), date(2026, 11, 12)),
+              ("obowiązująca 10 listopada 2026 r.", date(2026, 11, 10), date(2026, 11, 10)),
+              ("obowiązująca w dniach 7-9 listopada 2026 r.", date(2026, 11, 7), date(2026, 11, 9)),
+              ("obowiązująca w dniach 31 października - 2 listopada 2026 r.", date(2026, 10, 31), date(2026, 11, 2)),
+          ]
+          for text, expected_start, expected_end in cases:
+              actual = paliwo.extract_validity_period(text, "test")
+              assert actual == (expected_start, expected_end), (text, actual)
+          print("Date parser tests passed.")
+          PY
 
       - name: Check official CPN announcement and notify
         env:
