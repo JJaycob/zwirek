@@ -146,53 +146,52 @@ def parse_polish_month_date(day, month_name, year):
 
 def extract_validity_period(text, url):
     """Read the explicit validity dates from the Ministry article headline/body."""
-    normalized = " ".join(text.replace("\\xa0", " ").split()).casefold()
+    normalized = " ".join(text.replace("\xa0", " ").split()).casefold()
 
-    # A range crossing a month boundary, e.g. 31 października - 2 listopada 2026 r.
+    # Cross-month range, e.g. 31 października - 2 listopada 2026 r.
     cross_month = re.search(
-        rf"(?<!\\d)(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s*[-–—]\\s*"
-        rf"(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+        rf"(?<!\d)(\d{{1,2}})\s+({MONTH_PATTERN})\s*[-–—]\s*"
+        rf"(\d{{1,2}})\s+({MONTH_PATTERN})\s+(20\d{{2}})",
         normalized,
     )
     if cross_month:
-        start = parse_polish_month_date(cross_month.group(1), cross_month.group(2), cross_month.group(5))
-        end = parse_polish_month_date(cross_month.group(3), cross_month.group(4), cross_month.group(5))
-        return start, end
+        start_day = parse_polish_month_date(cross_month.group(1), cross_month.group(2), cross_month.group(5))
+        end_day = parse_polish_month_date(cross_month.group(3), cross_month.group(4), cross_month.group(5))
+        return start_day, end_day
 
-    # A range within one month, e.g. w dniach 11-12 listopada 2026 r.
+    # Same-month range, e.g. w dniach 11-12 listopada 2026 r.
     same_month = re.search(
-        rf"(?<!\\d)(\\d{{1,2}})\\s*[-–—]\\s*(\\d{{1,2}})\\s+"
-        rf"({MONTH_PATTERN})\\s+(20\\d{{2}})",
+        rf"(?<!\d)(\d{{1,2}})\s*[-–—]\s*(\d{{1,2}})\s+"
+        rf"({MONTH_PATTERN})\s+(20\d{{2}})",
         normalized,
     )
     if same_month:
-        start = parse_polish_month_date(same_month.group(1), same_month.group(3), same_month.group(4))
-        end = parse_polish_month_date(same_month.group(2), same_month.group(3), same_month.group(4))
-        return start, end
+        start_day = parse_polish_month_date(same_month.group(1), same_month.group(3), same_month.group(4))
+        end_day = parse_polish_month_date(same_month.group(2), same_month.group(3), same_month.group(4))
+        return start_day, end_day
 
-    # A single-day notice, e.g. "obowiązująca 10 listopada 2026 r."
+    # Single day, e.g. obowiązująca 10 listopada 2026 r.
     single_day = re.search(
-        rf"obowiązuj[a-ząćęłńóśźż]*\\s+(?:w\\s+dniu\\s+)?"
-        rf"(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+        rf"obowiązuj[a-ząćęłńóśźż]*\s+(?:w\s+dniu\s+)?"
+        rf"(\d{{1,2}})\s+({MONTH_PATTERN})\s+(20\d{{2}})",
         normalized,
     )
     if single_day:
         day = parse_polish_month_date(single_day.group(1), single_day.group(2), single_day.group(3))
         return day, day
 
-    # Numeric date ranges are used in some older Ministry notices.
+    # Numeric ranges, e.g. 10.11-12.11 2026.
     numeric_range = re.search(
-        r"(?<!\\d)(\\d{1,2})[./](\\d{1,2})\\s*[-–—]\\s*"
-        r"(\\d{1,2})[./](\\d{1,2})\\s+(20\\d{2})",
+        r"(?<!\d)(\d{1,2})[./](\d{1,2})\s*[-–—]\s*"
+        r"(\d{1,2})[./](\d{1,2})\s+(20\d{2})",
         normalized,
     )
     if numeric_range:
-        start = date(int(numeric_range.group(5)), int(numeric_range.group(2)), int(numeric_range.group(1)))
-        end = date(int(numeric_range.group(5)), int(numeric_range.group(4)), int(numeric_range.group(3)))
-        return start, end
+        start_day = date(int(numeric_range.group(5)), int(numeric_range.group(2)), int(numeric_range.group(1)))
+        end_day = date(int(numeric_range.group(5)), int(numeric_range.group(4)), int(numeric_range.group(3)))
+        return start_day, end_day
 
     raise ValueError(f"Nie udało się odczytać okresu obowiązywania ceny w komunikacie: {url}")
-
 
 def parse_article(url):
     raw, final_url = fetch_bytes(url)
