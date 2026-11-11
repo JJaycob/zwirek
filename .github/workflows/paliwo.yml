@@ -2,13 +2,17 @@ name: PB95 CPN price notifier
 
 on:
   schedule:
-    # 14:30 UTC = 16:30 CEST; 15:30 UTC = 16:30 CET.
-    # Script itself checks Europe/Warsaw time, so only one run proceeds.
+    # GitHub may delay scheduled jobs. Retry every 10 minutes around the target time;
+    # paliwo.py ignores runs before 16:25 Warsaw time and safely ignores duplicates.
     - cron: "*/10 14,15 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: pb95-price-check
+  cancel-in-progress: false
 
 jobs:
   check-price:
@@ -24,6 +28,9 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Validate Python syntax
+        run: python -m py_compile paliwo.py
 
       - name: Check official CPN announcement and notify
         env:
