@@ -9,9 +9,14 @@ on:
       - ".github/workflows/paliwo.yml"
       - "requirements.txt"
   schedule:
-    # GitHub may delay scheduled jobs. Retry every 10 minutes around the target time;
-    # paliwo.py ignores runs before 16:25 Warsaw time and safely ignores duplicates.
-    - cron: "*/10 14-17 * * *"
+    # Warsaw local time: staggered retries after the requested 16:30 report time.
+    # Non-round minutes reduce contention; later runs catch up if an earlier one is delayed.
+    - cron: "37 16 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "47 16 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "7 17 * * *"
+      timezone: "Europe/Warsaw"
   workflow_dispatch:
 
 permissions:
