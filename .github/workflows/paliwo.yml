@@ -9,13 +9,25 @@ on:
       - ".github/workflows/paliwo.yml"
       - "requirements.txt"
   schedule:
-    # Warsaw local time: staggered retries after the requested 16:30 report time.
-    # Non-round minutes reduce contention; later runs catch up if an earlier one is delayed.
+    # Start checking before the usual publication time; if tomorrow's notice is absent,
+    # the script exits without sending and the next scheduled attempt checks again.
+    - cron: "37 14 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "28 15 * * *"
+      timezone: "Europe/Warsaw"
     - cron: "37 16 * * *"
       timezone: "Europe/Warsaw"
     - cron: "47 16 * * *"
       timezone: "Europe/Warsaw"
     - cron: "7 17 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "27 17 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "47 17 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "7 18 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "37 18 * * *"
       timezone: "Europe/Warsaw"
   workflow_dispatch:
 
@@ -63,6 +75,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHECK_ONLY: ${{ github.event_name == 'push' && 'true' || 'false' }}
         run: python paliwo.py
 
       - name: Save notification state
