@@ -335,10 +335,7 @@ def main():
     now = datetime.now(TZ)
     manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
-    # Scheduled checks begin at 16:25 Warsaw time. Late GitHub starts can still catch up.
-    if not manual and (now.hour < 16 or (now.hour == 16 and now.minute < 25)):
-        print(f"Za wcześnie na raport (teraz {now:%H:%M} Europe/Warsaw). Koniec.")
-        return
+    check_only = os.environ.get("CHECK_ONLY", "").casefold() == "true"
 
     today = now.date()
     tomorrow = today + timedelta(days=1)
@@ -357,10 +354,11 @@ def main():
             "Nie wysyłam raportu z niepotwierdzonym porównaniem."
         )
     if tomorrow_notice is None:
-        raise RuntimeError(
-            f"Ministerstwo nie opublikowało jeszcze komunikatu obejmującego jutro ({tomorrow.isoformat()}). "
-            "Ponowię sprawdzenie przy kolejnym uruchomieniu."
+        print(
+            f"Komunikat z ceną PB95 na jutro ({tomorrow.isoformat()}) nie jest jeszcze dostępny. "
+            "Nie wysyłam raportu; kolejna zaplanowana próba sprawdzi to ponownie."
         )
+        return
 
     today_price = today_notice["price"]
     tomorrow_price = tomorrow_notice["price"]
@@ -371,6 +369,14 @@ def main():
         f"jutro: {tomorrow_price:.2f} zł/l "
         f"({tomorrow_notice['effective_from']}–{tomorrow_notice['effective_to']})."
     )
+
+    if check_only:
+        print(
+            f"TEST BEZ WYSYŁKI: PB95 jutro {tomorrow_price:.2f} zł/l; "
+            f"dziś {today_price:.2f} zł/l; zmiana {difference:+.2f} zł/l; "
+            f"źródło: {tomorrow_notice['url']}"
+        )
+        return
 
     state = load_state()
     report_for = tomorrow.isoformat()
