@@ -611,27 +611,58 @@ def main():
     if tomorrow_notice is None:
         print(
             f"Komunikat z ceną PB95 na jutro ({tomorrow.isoformat()}) nie jest jeszcze dostępny. "
-            "Nie wysyłam raportu; kolejna zaplanowana próba sprawdzi to ponownie."
+            "Kolejna zaplanowana próba sprawdzi to ponownie."
         )
-        # The final scheduled check runs at 18:37 local time. If no notice for
-        # tomorrow exists by then, send one explicit status instead of staying silent.
-        final_check_passed = now.hour > 18 or (now.hour == 18 and now.minute >= 37)
-        if final_check_passed and not check_only:
-            last_price = today_notice["price"]
-            start = today_notice["effective_from"].strftime("%d.%m.%Y")
-            end = today_notice["effective_to"].strftime("%d.%m.%Y")
-            pending_message = (
-                "⛽ RAPORT PB95 – BRAK CENY NA JUTRO\n"
+
+        # Catch up a missed daily report: if the price for today is confirmed
+        # but today's report was never delivered, send it once instead of staying silent.
+        state = load_state()
+        if not check_only and state.get("last_report_for") != today.isoformat():
+            yesterday = today - timedelta(days=1)
+            yesterday_notice = find_applicable_notice(announcements, yesterday)
+            today_price = today_notice["price"]
+
+            if yesterday_notice is not None:
+                yesterday_price = yesterday_notice["price"]
+                difference = round(today_price - yesterday_price, 2)
+                if difference > 0:
+                    change_line = f"📈 Wzrost o {difference:.2f} zł/l względem wczoraj ({yesterday_price:.2f} zł/l)."
+                elif difference < 0:
+                    change_line = f"📉 Spadek o {abs(difference):.2f} zł/l względem wczoraj ({yesterday_price:.2f} zł/l)."
+                else:
+                    change_line = f"➖ Bez zmian względem wczoraj ({yesterday_price:.2f} zł/l)."
+            else:
+                yesterday_price = None
+                change_line = "Nie mam poprzedniego potwierdzonego komunikatu do porównania."
+
+            catchup_message = (
+                "⛽ ZALEGŁY RAPORT – MAKSYMALNA CENA PB95\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                f"📅 Szukana data: {tomorrow:%d.%m.%Y}\n"
-                "Ministerstwo nie opublikowało jeszcze komunikatu obejmującego jutro.\n"
-                f"📌 Ostatnia potwierdzona cena: {last_price:.2f} zł/l\n"
-                f"Obowiązywała: {start}–{end}.\n"
-                "To nie jest potwierdzona cena na jutro.\n"
+                f"📅 Cena obowiązująca dziś: {today:%d.%m.%Y}\n"
+                f"💰 {today_price:.2f} zł/l\n"
+                f"{change_line}\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "Nie ma jeszcze oficjalnego obwieszczenia z ceną na jutro. "
                 "Bot sprawdzi ponownie przy kolejnym uruchomieniu.\n"
                 f"Źródło: {today_notice['url']}"
             )
-            notify_once("last_pending_for", tomorrow.isoformat(), pending_message)
+            send_telegram(catchup_message)
+            state.update({
+                "last_price": today_price,
+                "last_notice": today_notice["url"],
+                "last_report_for": today.isoformat(),
+                "last_report_price": today_price,
+                "reported_previous_price": yesterday_price,
+                "sent_at": now.isoformat(),
+                "effective_from": today_notice["effective_from"].isoformat(),
+                "effective_to": today_notice["effective_to"].isoformat(),
+            })
+            save_state(state)
+            print(
+                f"Wysłano zaległy raport PB95 na dziś ({today.isoformat()}): "
+                f"{today_price:.2f} zł/l."
+            )
+
         return
 
     today_price = today_notice["price"]
