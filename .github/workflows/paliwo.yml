@@ -78,7 +78,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          CHECK_ONLY: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          CHECK_ONLY: 'false'
         run: python paliwo.py
 
       - name: Save notification state
