@@ -343,12 +343,12 @@ def parse_eli_notice(item, year):
     pdf_text = " ".join(
         (page.extract_text() or "") for page in reader.pages
     )
-    normalized = " ".join(pdf_text.replace("\\xa0", " ").split()).casefold()
+    normalized = " ".join(pdf_text.replace("\xa0", " ").split()).casefold()
 
     section = re.search(
-        r"benzyny\\s+silnikowej\\s+bezołowiowej\\s+95(.*?)(?="
-        r"benzyny\\s+silnikowej\\s+bezołowiowej\\s+98|"
-        r"oleju\\s+napędowego|\\b2\\))",
+        r"benzyny\s+silnikowej\s+bezołowiowej\s+95(.*?)(?="
+        r"benzyny\s+silnikowej\s+bezołowiowej\s+98|"
+        r"oleju\s+napędowego|\b2\\))",
         normalized,
         flags=re.IGNORECASE,
     )
@@ -356,14 +356,14 @@ def parse_eli_notice(item, year):
         raise ValueError(f"Nie znaleziono sekcji PB95 w PDF: {pdf_url}")
 
     gross_values = re.findall(
-        r"(\\d{1,2}[,.]\\d{2})\\s*zł\\s*za\\s*1\\s*l\\b",
+        r"(\d{1,2}[,.]\d{2})\s*zł\s*za\s*1\s*l\b",
         section.group(1),
         flags=re.IGNORECASE,
     )
     if not gross_values:
         # Some PDF text layers omit the space between the unit and litre.
         gross_values = re.findall(
-            r"(\\d{1,2}[,.]\\d{2})\\s*zł\\s*za\\s*1\\s*l",
+            r"(\d{1,2}[,.]\d{2})\s*zł\s*za\s*1\s*l",
             section.group(1),
             flags=re.IGNORECASE,
         )
@@ -445,18 +445,18 @@ def fetch_eli_price_announcements():
 
 
 def fetch_recent_price_announcements():
-    """Use Ministry news first; fall back to the official ELI API/PDF source."""
+    """Use the reachable official ELI API first; Ministry news is a fallback."""
     try:
-        announcements = fetch_gov_price_announcements()
-        print("Źródło danych: aktualności Ministerstwa Energii.")
-        return announcements
-    except Exception as gov_error:
-        print(
-            "Nie można pobrać aktualności gov.pl. "
-            f"Przechodzę na oficjalne API ELI: {gov_error}"
-        )
         announcements = fetch_eli_price_announcements()
         print("Źródło danych: oficjalne API ELI / Monitor Polski.")
+        return announcements
+    except Exception as eli_error:
+        print(
+            "Nie można pobrać oficjalnych danych z ELI. "
+            f"Próbuję aktualności Ministerstwa Energii: {eli_error}"
+        )
+        announcements = fetch_gov_price_announcements()
+        print("Źródło danych: aktualności Ministerstwa Energii.")
         return announcements
 
 
