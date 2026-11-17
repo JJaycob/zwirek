@@ -79,7 +79,7 @@ def fetch_bytes(url, accept="text/html,application/xhtml+xml,*/*"):
     """GET with retries for transient disconnects and HTTP 5xx/429 responses."""
     retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
     last_error = None
-    for attempt in range(1, 6):
+    for attempt in range(1, 4):
         request = Request(
             url,
             headers={
@@ -89,14 +89,14 @@ def fetch_bytes(url, accept="text/html,application/xhtml+xml,*/*"):
             },
         )
         try:
-            with urlopen(request, timeout=40) as response:
+            with urlopen(request, timeout=15) as response:
                 return response.read(), response.geturl()
         except HTTPError as exc:
-            if exc.code not in retryable_statuses or attempt == 5:
+            if exc.code not in retryable_statuses or attempt == 3:
                 raise
             last_error = exc
         except (URLError, RemoteDisconnected, TimeoutError, socket.timeout, ConnectionError, OSError) as exc:
-            if attempt == 5:
+            if attempt == 3:
                 raise
             last_error = exc
         delay = min(2 ** (attempt - 1), 8)
@@ -271,7 +271,7 @@ def fetch_recent_price_announcements():
     announcements = []
     errors = []
     # The first few entries include the newest daily notice and previous price for comparison.
-    for url in candidates[:8]:
+    for url in candidates[:4]:
         try:
             announcements.append(parse_article(url))
         except Exception as exc:
