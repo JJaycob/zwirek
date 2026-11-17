@@ -346,9 +346,8 @@ def parse_eli_notice(item, year):
     normalized = " ".join(pdf_text.replace("\xa0", " ").split()).casefold()
 
     section = re.search(
-        r"benzyny\s+silnikowej\s+bezołowiowej\s+95(.*?)(?="
-        r"benzyny\s+silnikowej\s+bezołowiowej\s+98|"
-        r"oleju\s+napędowego|\b2\\))",
+        r"benzyny\s+silnikowej\s+bezołowiowej\s+95(.*?)"
+        r"(?=benzyny\s+silnikowej\s+bezołowiowej\s+98)",
         normalized,
         flags=re.IGNORECASE,
     )
