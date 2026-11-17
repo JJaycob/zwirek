@@ -53,6 +53,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Diagnose network access to official price sources
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          for url in \
+            "https://www.gov.pl/web/energia/wiadomosci?size=50" \
+            "https://api.sejm.gov.pl/eli/acts/MP/2026" \
+            "https://monitorpolski.gov.pl"; do
+            echo "Testing IPv4: $url"
+            curl -4 -L --connect-timeout 5 --max-time 8 -sS -o /dev/null -w "HTTP %{http_code}; remote %{remote_ip}; time %{time_total}s\n" "$url" || true
+          done
+
       - name: Validate Python syntax and date parser
         run: |
           python -m py_compile paliwo.py
