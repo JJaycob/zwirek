@@ -68,7 +68,10 @@ jobs:
           for text, expected_start, expected_end in cases:
               actual = paliwo.extract_validity_period(text, "test")
               assert actual == (expected_start, expected_end), (text, actual)
-          print("Date parser tests passed.")
+
+          assert paliwo.eli_years_for(date(2026, 12, 31)) == [2025, 2026, 2027]
+          assert paliwo.eli_years_for(date(2027, 1, 1)) == [2026, 2027]
+          print("Date parser and New Year rollover tests passed.")
           PY
 
       - name: Check official CPN announcement and notify
