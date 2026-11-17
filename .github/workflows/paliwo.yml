@@ -79,6 +79,7 @@ jobs:
         run: python paliwo.py
 
       - name: Save notification state
+        if: always()
         run: |
           if git status --porcelain | grep -q "paliwo_seen.json"; then
             git config --global user.name "github-actions[bot]"
