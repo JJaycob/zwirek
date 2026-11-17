@@ -9,6 +9,7 @@ from io import BytesIO
 from http.client import RemoteDisconnected
 from html.parser import HTMLParser
 from pathlib import Path
+from pypdf import PdfReader
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -271,7 +272,13 @@ def fetch_gov_price_announcements():
         absolute = urljoin(GOV_BASE, href)
         if "/web/energia/" not in absolute:
             continue
-        if "maksymalna-cena-detaliczna-paliw" not in absolute.casefold():
+        url_matches = "maksymalna-cena-detaliczna-paliw" in absolute.casefold()
+        label_text = " ".join(label.casefold().split())
+        label_matches = (
+            "maksymalna cena detaliczna paliw" in label_text
+            or "maksymalnej ceny paliw" in label_text
+        )
+        if not (url_matches or label_matches):
             continue
         if absolute in seen:
             continue
@@ -337,8 +344,6 @@ def parse_eli_notice(item, year):
     position = int(item["pos"])
     pdf_url = f"https://api.sejm.gov.pl/eli/acts/MP/{year}/{position}/text.pdf"
     raw, _ = fetch_bytes(pdf_url, accept="application/pdf,*/*")
-    from pypdf import PdfReader
-
     reader = PdfReader(BytesIO(raw))
     pdf_text = " ".join(
         (page.extract_text() or "") for page in reader.pages
@@ -388,29 +393,50 @@ def parse_eli_notice(item, year):
 
 
 def fetch_eli_price_announcements():
-    """Fallback: official ELI API + official Monitor Polski PDF files."""
-    current_year = datetime.now(TZ).year
-    api_url = f"https://api.sejm.gov.pl/eli/acts/MP/{current_year}"
-    raw, _ = fetch_bytes(api_url, accept="application/json")
-    payload = json.loads(raw.decode("utf-8"))
-    items = payload.get("items", [])
+    """Fetch official ELI notices for adjacent years to handle New Year's Day."""
+    today = datetime.now(TZ).date()
+    tomorrow = today + timedelta(days=1)
+    years = sorted({today.year - 1, today.year, tomorrow.year})
 
-    matching = [
-        item for item in items
-        if item.get("publisher") == "MP"
-        and "maksymalnej ceny paliw ciekłych" in (item.get("title") or "").casefold()
-        and item.get("promulgation")
-    ]
-    matching.sort(key=lambda item: item["promulgation"], reverse=True)
+    matching = []
+    fetch_errors = []
+    for year in years:
+        api_url = f"https://api.sejm.gov.pl/eli/acts/MP/{year}"
+        try:
+            raw, _ = fetch_bytes(api_url, accept="application/json")
+            payload = json.loads(raw.decode("utf-8"))
+            items = payload.get("items", [])
+        except Exception as exc:
+            fetch_errors.append(f"{year}: {exc}")
+            print(f"Nie udało się pobrać rocznika ELI {year}: {exc}")
+            continue
+
+        for item in items:
+            if (
+                item.get("publisher") == "MP"
+                and "maksymalnej ceny paliw ciekłych" in (item.get("title") or "").casefold()
+                and item.get("promulgation")
+            ):
+                matching.append((item, year))
+
+    matching.sort(
+        key=lambda entry: (entry[0]["promulgation"], int(entry[0].get("pos", 0))),
+        reverse=True,
+    )
 
     if not matching:
-        raise RuntimeError("ELI API nie zwróciło obwieszczeń o maksymalnej cenie paliw.")
+        detail = " | ".join(fetch_errors)
+        raise RuntimeError(
+            "ELI API nie zwróciło obwieszczeń o maksymalnej cenie paliw."
+            + (f" Błędy pobierania roczników: {detail}" if detail else "")
+        )
 
     announcements = []
     errors = []
-    for item in matching[:5]:
+    # Keep enough recent notices to include the last published price from the previous year.
+    for item, year in matching[:10]:
         try:
-            announcements.append(parse_eli_notice(item, current_year))
+            announcements.append(parse_eli_notice(item, year))
         except Exception as exc:
             errors.append(f"{item.get('title')}: {exc}")
             print(f"Pomijam nieczytelne obwieszczenie ELI: {exc}")
@@ -420,11 +446,11 @@ def fetch_eli_price_announcements():
             "Nie udało się odczytać żadnego oficjalnego PDF z ELI. " + " | ".join(errors)
         )
 
-    announcements.sort(key=lambda item: item["published"])
+    announcements.sort(key=lambda item: (item["published"], item["title"]))
     for index, announcement in enumerate(announcements):
         if index + 1 < len(announcements):
-            # The previous maximum price remains in force through the date
-            # on which the following notice is published in Monitor Polski.
+            # The previous maximum price remains in force through the publication
+            # date of the following notice; the latter normally takes effect next day.
             announcement["effective_to"] = announcements[index + 1]["published"]
         else:
             # A Friday/holiday announcement also covers the next working day.
@@ -436,7 +462,8 @@ def fetch_eli_price_announcements():
             )
 
     print(
-        f"ELI: odczytano {len(announcements)} oficjalnych obwieszczeń. "
+        f"ELI: odczytano {len(announcements)} oficjalnych obwieszczeń "
+        f"z roczników {', '.join(map(str, years))}. "
         f"Najnowsze: {announcements[-1]['published']} – "
         f"PB95 {announcements[-1]['price']:.2f} zł/l."
     )
@@ -526,8 +553,6 @@ def notify_once(state_key, target, message):
 
 def main():
     now = datetime.now(TZ)
-    manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-
     check_only = os.environ.get("CHECK_ONLY", "").casefold() == "true"
 
     today = now.date()
@@ -649,7 +674,7 @@ def main():
 
     # Save the report date only after Telegram confirms delivery.
     send_telegram(message)
-    save_state({
+    state.update({
         "last_price": tomorrow_price,
         "last_notice": tomorrow_notice["url"],
         "last_report_for": report_for,
@@ -659,6 +684,7 @@ def main():
         "effective_from": tomorrow_notice["effective_from"].isoformat(),
         "effective_to": tomorrow_notice["effective_to"].isoformat(),
     })
+    save_state(state)
     print(
         f"Wysłano dzienny raport PB95 na {tomorrow.isoformat()}: "
         f"{tomorrow_price:.2f} zł/l; zmiana {difference:+.2f} zł/l."
