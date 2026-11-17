@@ -5,6 +5,7 @@ import re
 import socket
 import time
 from datetime import date, datetime, timedelta
+from http.client import RemoteDisconnected
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -331,6 +332,24 @@ def send_telegram(message):
         raise RuntimeError(f"Telegram zwrócił błąd: {result}")
 
 
+def notify_once(state_key, target, message):
+    """Send a Telegram status/error only once for a given target date."""
+    state = load_state()
+    if state.get(state_key) == target:
+        print(f"Powiadomienie {state_key} dla {target} było już wysłane.")
+        return False
+    try:
+        send_telegram(message[:4000])
+    except Exception as exc:
+        print(f"Nie udało się wysłać pomocniczego powiadomienia Telegram: {exc}")
+        return False
+    state[state_key] = target
+    state[f"{state_key}_at"] = datetime.now(TZ).isoformat()
+    save_state(state)
+    print(f"Wysłano pomocnicze powiadomienie: {state_key} dla {target}.")
+    return True
+
+
 def main():
     now = datetime.now(TZ)
     manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
@@ -344,20 +363,65 @@ def main():
         f"i jutro ({tomorrow.isoformat()})."
     )
 
-    announcements = fetch_recent_price_announcements()
+    try:
+        announcements = fetch_recent_price_announcements()
+    except Exception as exc:
+        print(f"Nie udało się pobrać lub odczytać komunikatów Ministerstwa: {exc}")
+        if not check_only:
+            notify_once(
+                "last_error_for",
+                today.isoformat(),
+                "⚠️ BOT PB95 – PROBLEM Z ODCZYTEM\n"
+                f"Data: {today:%d.%m.%Y}\n"
+                "Nie udało się pobrać lub odczytać oficjalnego komunikatu Ministerstwa. "
+                "Bot spróbuje ponownie przy następnym uruchomieniu.\n"
+                f"Szczegóły: {str(exc)[:900]}",
+            )
+        raise
+
     today_notice = find_applicable_notice(announcements, today)
     tomorrow_notice = find_applicable_notice(announcements, tomorrow)
 
     if today_notice is None:
-        raise RuntimeError(
+        error = (
             f"Nie znalazłem oficjalnego komunikatu określającego cenę PB95 na dziś ({today.isoformat()}). "
             "Nie wysyłam raportu z niepotwierdzonym porównaniem."
         )
+        if not check_only:
+            notify_once(
+                "last_error_for",
+                today.isoformat(),
+                "⚠️ BOT PB95 – BRAK POTWIERDZONEJ CENY NA DZIŚ\n"
+                f"Data: {today:%d.%m.%Y}\n"
+                "Nie znalazłem oficjalnego komunikatu określającego dzisiejszą cenę PB95. "
+                "Nie podaję niepotwierdzonej ceny. Bot spróbuje ponownie.",
+            )
+        raise RuntimeError(error)
+
     if tomorrow_notice is None:
         print(
             f"Komunikat z ceną PB95 na jutro ({tomorrow.isoformat()}) nie jest jeszcze dostępny. "
             "Nie wysyłam raportu; kolejna zaplanowana próba sprawdzi to ponownie."
         )
+        # The final scheduled check runs at 18:37 local time. If no notice for
+        # tomorrow exists by then, send one explicit status instead of staying silent.
+        final_check_passed = now.hour > 18 or (now.hour == 18 and now.minute >= 37)
+        if final_check_passed and not check_only:
+            last_price = today_notice["price"]
+            start = today_notice["effective_from"].strftime("%d.%m.%Y")
+            end = today_notice["effective_to"].strftime("%d.%m.%Y")
+            pending_message = (
+                "⛽ RAPORT PB95 – BRAK CENY NA JUTRO\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"📅 Szukana data: {tomorrow:%d.%m.%Y}\n"
+                "Ministerstwo nie opublikowało jeszcze komunikatu obejmującego jutro.\n"
+                f"📌 Ostatnia potwierdzona cena: {last_price:.2f} zł/l\n"
+                f"Obowiązywała: {start}–{end}.\n"
+                "To nie jest potwierdzona cena na jutro.\n"
+                "Bot sprawdzi ponownie przy kolejnym uruchomieniu.\n"
+                f"Źródło: {today_notice['url']}"
+            )
+            notify_once("last_pending_for", tomorrow.isoformat(), pending_message)
         return
 
     today_price = today_notice["price"]
