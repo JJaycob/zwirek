@@ -557,20 +557,27 @@ def main():
     tomorrow_notice = find_applicable_notice(announcements, tomorrow)
 
     if today_notice is None:
-        error = (
-            f"Nie znalazłem oficjalnego komunikatu określającego cenę PB95 na dziś ({today.isoformat()}). "
-            "Nie wysyłam raportu z niepotwierdzonym porównaniem."
+        print(
+            f"Brak oficjalnego komunikatu określającego cenę PB95 na dziś ({today.isoformat()})."
         )
-        if not check_only:
+        # Earlier checks should wait; only the last daily attempt reports this.
+        final_check_passed = now.hour > 18 or (now.hour == 18 and now.minute >= 37)
+        if final_check_passed and not check_only:
+            latest = max(announcements, key=lambda item: item["published"])
+            latest_date = latest["published"].strftime("%d.%m.%Y")
+            latest_price = latest["price"]
+            latest_url = latest["url"]
             notify_once(
                 "last_error_for",
                 today.isoformat(),
                 "⚠️ BOT PB95 – BRAK POTWIERDZONEJ CENY NA DZIŚ\n"
                 f"Data: {today:%d.%m.%Y}\n"
-                "Nie znalazłem oficjalnego komunikatu określającego dzisiejszą cenę PB95. "
-                "Nie podaję niepotwierdzonej ceny. Bot spróbuje ponownie.",
+                "Nie znalazłem w oficjalnych źródłach komunikatu określającego dzisiejszą cenę PB95. "
+                "Nie podaję niepotwierdzonej ceny. Bot sprawdzi ponownie jutro.\n"
+                f"Ostatnie potwierdzone obwieszczenie: {latest_date}, PB95 {latest_price:.2f} zł/l.\n"
+                f"Źródło: {latest_url}",
             )
-        raise RuntimeError(error)
+        return
 
     if tomorrow_notice is None:
         print(
