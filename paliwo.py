@@ -5,6 +5,7 @@ import re
 import socket
 import time
 from datetime import date, datetime, timedelta
+from io import BytesIO
 from http.client import RemoteDisconnected
 from html.parser import HTMLParser
 from pathlib import Path
@@ -75,6 +76,20 @@ class TextParser(HTMLParser):
         return html.unescape(" ".join(self.parts))
 
 
+def urlopen_ipv4(request, timeout):
+    """Open a URL over IPv4; GitHub runners may have no working IPv6 route."""
+    original_getaddrinfo = socket.getaddrinfo
+
+    def ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        return original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+    socket.getaddrinfo = ipv4_getaddrinfo
+    try:
+        return urlopen(request, timeout=timeout)
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
+
+
 def fetch_bytes(url, accept="text/html,application/xhtml+xml,*/*"):
     """GET with retries for transient disconnects and HTTP 5xx/429 responses."""
     retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
@@ -89,7 +104,7 @@ def fetch_bytes(url, accept="text/html,application/xhtml+xml,*/*"):
             },
         )
         try:
-            with urlopen(request, timeout=15) as response:
+            with urlopen_ipv4(request, timeout=15) as response:
                 return response.read(), response.geturl()
         except HTTPError as exc:
             if exc.code not in retryable_statuses or attempt == 3:
@@ -245,7 +260,7 @@ def parse_article(url):
     }
 
 
-def fetch_recent_price_announcements():
+def fetch_gov_price_announcements():
     raw, _ = fetch_bytes(NEWS_URL)
     listing = LinkParser()
     listing.feed(raw.decode("utf-8", errors="replace"))
@@ -283,6 +298,166 @@ def fetch_recent_price_announcements():
 
     announcements.sort(key=lambda item: item["published"], reverse=True)
     return announcements
+
+
+
+def easter_sunday(year):
+    """Gregorian Easter date (Meeus/Jones/Butcher algorithm)."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f, g = divmod(b + 8, 25)
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def is_polish_non_working_day(day):
+    fixed_holidays = {
+        (1, 1), (1, 6), (5, 1), (5, 3), (8, 15),
+        (11, 1), (11, 11), (12, 25), (12, 26),
+    }
+    easter = easter_sunday(day.year)
+    movable_holidays = {easter + timedelta(days=1), easter + timedelta(days=60)}
+    return day.weekday() >= 5 or (day.month, day.day) in fixed_holidays or day in movable_holidays
+
+
+def next_polish_working_day(day):
+    while is_polish_non_working_day(day):
+        day += timedelta(days=1)
+    return day
+
+
+def parse_eli_notice(item, year):
+    """Download an official Monitor Polski PDF and read gross PB95."""
+    position = int(item["pos"])
+    pdf_url = f"https://api.sejm.gov.pl/eli/acts/MP/{year}/{position}/text.pdf"
+    raw, _ = fetch_bytes(pdf_url, accept="application/pdf,*/*")
+    from pypdf import PdfReader
+
+    reader = PdfReader(BytesIO(raw))
+    pdf_text = " ".join(
+        (page.extract_text() or "") for page in reader.pages
+    )
+    normalized = " ".join(pdf_text.replace("\\xa0", " ").split()).casefold()
+
+    section = re.search(
+        r"benzyny\\s+silnikowej\\s+bezołowiowej\\s+95(.*?)(?="
+        r"benzyny\\s+silnikowej\\s+bezołowiowej\\s+98|"
+        r"oleju\\s+napędowego|\\b2\\))",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not section:
+        raise ValueError(f"Nie znaleziono sekcji PB95 w PDF: {pdf_url}")
+
+    gross_values = re.findall(
+        r"(\\d{1,2}[,.]\\d{2})\\s*zł\\s*za\\s*1\\s*l\\b",
+        section.group(1),
+        flags=re.IGNORECASE,
+    )
+    if not gross_values:
+        # Some PDF text layers omit the space between the unit and litre.
+        gross_values = re.findall(
+            r"(\\d{1,2}[,.]\\d{2})\\s*zł\\s*za\\s*1\\s*l",
+            section.group(1),
+            flags=re.IGNORECASE,
+        )
+    if not gross_values:
+        raise ValueError(f"Nie znaleziono ceny brutto PB95 w PDF: {pdf_url}")
+
+    price = round(float(gross_values[-1].replace(",", ".")), 2)
+    if not (3.0 <= price <= 15.0):
+        raise ValueError(f"Odczytana cena PB95 wygląda nieprawidłowo: {price:.2f} zł/l")
+
+    published = parse_date(item.get("promulgation") or item.get("announcementDate"))
+    if not published:
+        raise ValueError(f"Brak daty publikacji w metadanych aktu: {item.get('title')}")
+
+    return {
+        "published": published,
+        "price": price,
+        "effective_from": published + timedelta(days=1),
+        "effective_to": published + timedelta(days=1),
+        "url": f"https://eli.gov.pl/eli/MP/{year}/{position}/ogl/pol",
+        "title": item.get("title") or f"M.P. {year} poz. {position}",
+    }
+
+
+def fetch_eli_price_announcements():
+    """Fallback: official ELI API + official Monitor Polski PDF files."""
+    current_year = datetime.now(TZ).year
+    api_url = f"https://api.sejm.gov.pl/eli/acts/MP/{current_year}"
+    raw, _ = fetch_bytes(api_url, accept="application/json")
+    payload = json.loads(raw.decode("utf-8"))
+    items = payload.get("items", [])
+
+    matching = [
+        item for item in items
+        if item.get("publisher") == "MP"
+        and "maksymalnej ceny paliw ciekłych" in (item.get("title") or "").casefold()
+        and item.get("promulgation")
+    ]
+    matching.sort(key=lambda item: item["promulgation"], reverse=True)
+
+    if not matching:
+        raise RuntimeError("ELI API nie zwróciło obwieszczeń o maksymalnej cenie paliw.")
+
+    announcements = []
+    errors = []
+    for item in matching[:5]:
+        try:
+            announcements.append(parse_eli_notice(item, current_year))
+        except Exception as exc:
+            errors.append(f"{item.get('title')}: {exc}")
+            print(f"Pomijam nieczytelne obwieszczenie ELI: {exc}")
+
+    if not announcements:
+        raise RuntimeError(
+            "Nie udało się odczytać żadnego oficjalnego PDF z ELI. " + " | ".join(errors)
+        )
+
+    announcements.sort(key=lambda item: item["published"])
+    for index, announcement in enumerate(announcements):
+        if index + 1 < len(announcements):
+            # The previous maximum price remains in force through the date
+            # on which the following notice is published in Monitor Polski.
+            announcement["effective_to"] = announcements[index + 1]["published"]
+        else:
+            # A Friday/holiday announcement also covers the next working day.
+            start = announcement["effective_from"]
+            announcement["effective_to"] = (
+                next_polish_working_day(start)
+                if is_polish_non_working_day(start)
+                else start
+            )
+
+    print(
+        f"ELI: odczytano {len(announcements)} oficjalnych obwieszczeń. "
+        f"Najnowsze: {announcements[-1]['published']} – "
+        f"PB95 {announcements[-1]['price']:.2f} zł/l."
+    )
+    return announcements
+
+
+def fetch_recent_price_announcements():
+    """Use Ministry news first; fall back to the official ELI API/PDF source."""
+    try:
+        announcements = fetch_gov_price_announcements()
+        print("Źródło danych: aktualności Ministerstwa Energii.")
+        return announcements
+    except Exception as gov_error:
+        print(
+            "Nie można pobrać aktualności gov.pl. "
+            f"Przechodzę na oficjalne API ELI: {gov_error}"
+        )
+        announcements = fetch_eli_price_announcements()
+        print("Źródło danych: oficjalne API ELI / Monitor Polski.")
+        return announcements
 
 
 def find_applicable_notice(announcements, target_date):
@@ -326,7 +501,7 @@ def send_telegram(message):
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:
+    with urlopen_ipv4(request, timeout=30) as response:
         result = json.loads(response.read().decode("utf-8"))
     if not result.get("ok"):
         raise RuntimeError(f"Telegram zwrócił błąd: {result}")
