@@ -100,7 +100,7 @@ def fetch_bytes(url, accept="text/html,application/xhtml+xml,*/*"):
                 raise
             last_error = exc
         delay = min(2 ** (attempt - 1), 8)
-        print(f"Tymczasowy błąd pobierania ({attempt}/5): {last_error}. Ponawiam za {delay} s.")
+        print(f"Tymczasowy błąd pobierania ({attempt}/3): {last_error}. Ponawiam za {delay} s.")
         time.sleep(delay)
     raise RuntimeError(f"Nie udało się pobrać {url}: {last_error}")
 
