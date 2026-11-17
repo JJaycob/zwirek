@@ -392,11 +392,15 @@ def parse_eli_notice(item, year):
     }
 
 
+def eli_years_for(day):
+    """Return API years needed for today/tomorrow and New Year's rollover."""
+    tomorrow = day + timedelta(days=1)
+    return sorted({day.year - 1, day.year, tomorrow.year})
+
 def fetch_eli_price_announcements():
     """Fetch official ELI notices for adjacent years to handle New Year's Day."""
     today = datetime.now(TZ).date()
-    tomorrow = today + timedelta(days=1)
-    years = sorted({today.year - 1, today.year, tomorrow.year})
+    years = eli_years_for(today)
 
     matching = []
     fetch_errors = []
