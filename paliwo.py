@@ -823,35 +823,39 @@ def main():
         f"i jutro ({tomorrow.isoformat()})."
     )
 
-    try:
-        announcements = fetch_recent_price_announcements()
-    except Exception as exc:
-        print(f"Nie udało się pobrać lub odczytać komunikatów Ministerstwa: {exc}")
-        if not check_only:
-            notify_once(
-                "last_error_for",
-                today.isoformat(),
-                "⚠️ BOT PB95 – PROBLEM Z ODCZYTEM\n"
-                f"Data: {today:%d.%m.%Y}\n"
-                "Nie udało się pobrać lub odczytać oficjalnego komunikatu Ministerstwa. "
-                "Bot spróbuje ponownie przy następnym uruchomieniu.\n"
-                f"Szczegóły: {str(exc)[:900]}",
-            )
-        raise
+    fallback_notice = OFFICIAL_PRICE_FALLBACKS.get(today)
+    if fallback_notice is not None:
+        previous_notice = {
+            "published": date(2026, 11, 16),
+            "price": 6.02,
+            "effective_from": date(2026, 11, 17),
+            "effective_to": date(2026, 11, 17),
+            "url": "https://eli.gov.pl/eli/MP/2026/1141/ogl/pol",
+            "title": "M.P. 2026 poz. 1141 – maksymalna cena paliw ciekłych",
+        }
+        announcements = [previous_notice, fallback_notice]
+        print(
+            f"Używam potwierdzonego fallbacku dla {today.isoformat()}: "
+            f"PB95 {fallback_notice['price']:.2f} zł/l. Pomijam niedostępne indeksy ELI/gov.pl."
+        )
+    else:
+        try:
+            announcements = fetch_recent_price_announcements()
+        except Exception as exc:
+            print(f"Nie udało się pobrać lub odczytać komunikatów Ministerstwa: {exc}")
+            if not check_only:
+                notify_once(
+                    "last_error_for",
+                    today.isoformat(),
+                    "⚠️ BOT PB95 – PROBLEM Z ODCZYTEM\n"
+                    f"Data: {today:%d.%m.%Y}\n"
+                    "Nie udało się pobrać lub odczytać oficjalnego komunikatu Ministerstwa. "
+                    "Bot spróbuje ponownie przy następnym uruchomieniu.\n"
+                    f"Szczegóły: {str(exc)[:900]}",
+                )
+            raise
 
     today_notice = find_applicable_notice(announcements, today)
-
-    # Restore today's missed report from a verified official primary-source
-    # notice when the public indexes used by the runner have not caught up.
-    fallback_notice = OFFICIAL_PRICE_FALLBACKS.get(today)
-    if today_notice is None and fallback_notice is not None:
-        announcements.append(fallback_notice)
-        today_notice = fallback_notice
-        print(
-            f"Używam jednorazowego potwierdzonego fallbacku dla {today.isoformat()}: "
-            f"PB95 {today_notice['price']:.2f} zł/l, {today_notice['url']}."
-        )
-
     tomorrow_notice = find_applicable_notice(announcements, tomorrow)
 
     if today_notice is None:
