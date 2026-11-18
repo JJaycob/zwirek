@@ -11,24 +11,15 @@ on:
   schedule:
     # Start checking before the usual publication time; if tomorrow's notice is absent,
     # the script exits without sending and the next scheduled attempt checks again.
-    - cron: "37 14 * * *"
-      timezone: "Europe/Warsaw"
-    - cron: "28 15 * * *"
-      timezone: "Europe/Warsaw"
-    - cron: "37 16 * * *"
-      timezone: "Europe/Warsaw"
+    - cron: "37 13 * * *"
+    - cron: "28 14 * * *"
+    - cron: "37 15 * * *"
+    - cron: "47 15 * * *"
+    - cron: "7 16 * * *"
+    - cron: "27 16 * * *"
     - cron: "47 16 * * *"
-      timezone: "Europe/Warsaw"
     - cron: "7 17 * * *"
-      timezone: "Europe/Warsaw"
-    - cron: "27 17 * * *"
-      timezone: "Europe/Warsaw"
-    - cron: "47 17 * * *"
-      timezone: "Europe/Warsaw"
-    - cron: "7 18 * * *"
-      timezone: "Europe/Warsaw"
-    - cron: "37 18 * * *"
-      timezone: "Europe/Warsaw"
+    - cron: "37 17 * * *"
   workflow_dispatch:
 
 permissions:
