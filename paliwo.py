@@ -121,6 +121,19 @@ def fetch_bytes(url, accept="text/html,application/xhtml+xml,*/*"):
     raise RuntimeError(f"Nie udało się pobrać {url}: {last_error}")
 
 
+def fetch_bytes_once(url, accept="text/html,application/xhtml+xml,*/*", timeout=8):
+    """Single short GET for probing not-yet-indexed ELI document numbers."""
+    request = Request(
+        url,
+        headers={
+            "Accept": accept,
+            "User-Agent": "Mozilla/5.0 (compatible; PB95-price-notifier/1.0)",
+            "Cache-Control": "no-cache",
+        },
+    )
+    with urlopen_ipv4(request, timeout=timeout) as response:
+        return response.read(), response.geturl()
+
 def parse_date(value):
     if not value:
         return None
@@ -339,11 +352,14 @@ def next_polish_working_day(day):
     return day
 
 
-def parse_eli_notice(item, year):
+def parse_eli_notice(item, year, pdf_raw=None):
     """Download an official Monitor Polski PDF and read gross PB95."""
     position = int(item["pos"])
     pdf_url = f"https://api.sejm.gov.pl/eli/acts/MP/{year}/{position}/text.pdf"
-    raw, _ = fetch_bytes(pdf_url, accept="application/pdf,*/*")
+    if pdf_raw is None:
+        raw, _ = fetch_bytes(pdf_url, accept="application/pdf,*/*")
+    else:
+        raw = pdf_raw
     reader = PdfReader(BytesIO(raw))
     pdf_text = " ".join(
         (page.extract_text() or "") for page in reader.pages
@@ -475,43 +491,77 @@ def fetch_eli_price_announcements():
     matching = list(matching_by_eli.values())
 
     # The annual/search feeds can lag behind the official publication.
-    # Probe the next publication numbers directly; the detail endpoint may
-    # already expose a fresh act even when it is absent from both listings.
-    for year in years:
-        positions = [
-            int(item.get("pos", 0))
-            for item, item_year in matching
-            if item_year == year
-        ]
-        if not positions:
-            continue
-        next_position = max(positions) + 1
-        for position in range(next_position, next_position + 11):
-            detail_url = f"https://api.sejm.gov.pl/eli/acts/MP/{year}/{position}"
+    # Probe a few following M.P. positions via the official ELI PDF endpoint.
+    direct_pdf_cache = {}
+    current_year = today.year
+    known_positions = [
+        int(item.get("pos", 0))
+        for item, item_year in matching
+        if item_year == current_year
+    ]
+    if known_positions:
+        next_position = max(known_positions) + 1
+        for position in range(next_position, next_position + 6):
+            pdf_url = f"https://eli.gov.pl/api/acts/MP/{current_year}/{position}/text.pdf"
             try:
-                raw, _ = fetch_bytes(detail_url, accept="application/json")
-                item = json.loads(raw.decode("utf-8"))
-            except HTTPError as exc:
-                if exc.code == 404:
-                    continue
-                print(f"ELI direct detail {year}/{position}: {exc}")
-                continue
+                raw_pdf, _ = fetch_bytes_once(
+                    pdf_url,
+                    accept="application/pdf,*/*",
+                    timeout=8,
+                )
+                pdf_text = " ".join(
+                    (page.extract_text() or "")
+                    for page in PdfReader(BytesIO(raw_pdf)).pages
+                )
+                normalized = " ".join(
+                    pdf_text.replace("\xa0", " ").split()
+                ).casefold()
             except Exception as exc:
-                print(f"ELI direct detail {year}/{position}: {exc}")
+                print(f"ELI direct PDF {current_year}/{position}: {exc}")
                 continue
 
-            title = (item.get("title") or "").casefold()
             if (
-                item.get("publisher") == "MP"
-                and "maksymalnej ceny paliw ciekłych" in title
-                and item.get("promulgation")
+                "maksymalnej ceny paliw ciekłych" not in normalized
+                or "benzyny silnikowej bezołowiowej 95" not in normalized
             ):
-                key = item.get("ELI") or f"MP/{year}/{position}"
-                matching_by_eli[key] = (item, year)
-                print(
-                    f"ELI direct detail: znaleziono nowe obwieszczenie "
-                    f"M.P. {year} poz. {position} z {item['promulgation']}."
+                continue
+
+            publication_match = re.search(
+                rf"warszawa,\s*dnia\s*(\d{{1,2}})\s+({MONTH_PATTERN})\s+(20\d{{2}})",
+                normalized,
+            )
+            if not publication_match:
+                publication_match = re.search(
+                    rf"z dnia\s+(\d{{1,2}})\s+({MONTH_PATTERN})\s+(20\d{{2}})",
+                    normalized,
                 )
+            if not publication_match:
+                print(f"ELI direct PDF {current_year}/{position}: brak daty publikacji.")
+                continue
+
+            published = parse_polish_month_date(
+                publication_match.group(1),
+                publication_match.group(2),
+                publication_match.group(3),
+            )
+            item = {
+                "publisher": "MP",
+                "year": current_year,
+                "pos": position,
+                "promulgation": published.isoformat(),
+                "title": (
+                    f"Obwieszczenie Ministra Energii z dnia {publication_match.group(1)} "
+                    f"{publication_match.group(2)} {publication_match.group(3)} r. "
+                    "w sprawie maksymalnej ceny paliw ciekłych"
+                ),
+            }
+            key = f"MP/{current_year}/{position}"
+            matching_by_eli[key] = (item, current_year)
+            direct_pdf_cache[(current_year, position)] = raw_pdf
+            print(
+                f"ELI direct PDF: znaleziono obwieszczenie M.P. {current_year} "
+                f"poz. {position} z {published.isoformat()}."
+            )
 
     matching = list(matching_by_eli.values())
     matching.sort(
@@ -531,7 +581,8 @@ def fetch_eli_price_announcements():
     # Keep enough recent notices to include the previous day's price for comparison.
     for item, year in matching[:20]:
         try:
-            announcements.append(parse_eli_notice(item, year))
+            cached_pdf = direct_pdf_cache.get((year, int(item["pos"])))
+            announcements.append(parse_eli_notice(item, year, pdf_raw=cached_pdf))
         except Exception as exc:
             errors.append(f"{item.get('title')}: {exc}")
             print(f"Pomijam nieczytelne obwieszczenie ELI: {exc}")
