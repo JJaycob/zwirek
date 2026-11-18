@@ -22,6 +22,19 @@ CHAT_ID = os.environ.get("CHAT_ID")
 NEWS_URL = "https://www.gov.pl/web/energia/wiadomosci?size=50"
 GOV_BASE = "https://www.gov.pl"
 
+# One-time recovery for a verified official notice published on 2026-11-17.
+# ELI and the ministry site were temporarily unavailable to GitHub-hosted runners.
+OFFICIAL_PRICE_FALLBACKS = {
+    date(2026, 11, 18): {
+        "published": date(2026, 11, 17),
+        "price": 5.99,
+        "effective_from": date(2026, 11, 18),
+        "effective_to": date(2026, 11, 18),
+        "url": "https://monitorpolski.gov.pl/M2026000114401.pdf",
+        "title": "M.P. 2026 poz. 1144 – maksymalna cena paliw ciekłych",
+    }
+}
+
 
 class LinkParser(HTMLParser):
     """Extract ordinary links from the Ministry's news listing."""
@@ -772,6 +785,13 @@ def send_telegram(message):
         result = json.loads(response.read().decode("utf-8"))
     if not result.get("ok"):
         raise RuntimeError(f"Telegram zwrócił błąd: {result}")
+    telegram_message = result.get("result", {})
+    print(
+        "Telegram zaakceptował wysyłkę: "
+        f"chat_id={telegram_message.get('chat', {}).get('id')}, "
+        f"message_id={telegram_message.get('message_id')}."
+    )
+    return telegram_message
 
 
 def notify_once(state_key, target, message):
@@ -820,6 +840,18 @@ def main():
         raise
 
     today_notice = find_applicable_notice(announcements, today)
+
+    # Restore today's missed report from a verified official primary-source
+    # notice when the public indexes used by the runner have not caught up.
+    fallback_notice = OFFICIAL_PRICE_FALLBACKS.get(today)
+    if today_notice is None and fallback_notice is not None:
+        announcements.append(fallback_notice)
+        today_notice = fallback_notice
+        print(
+            f"Używam jednorazowego potwierdzonego fallbacku dla {today.isoformat()}: "
+            f"PB95 {today_notice['price']:.2f} zł/l, {today_notice['url']}."
+        )
+
     tomorrow_notice = find_applicable_notice(announcements, tomorrow)
 
     if today_notice is None:
