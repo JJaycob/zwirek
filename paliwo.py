@@ -502,7 +502,7 @@ def fetch_eli_price_announcements():
     if known_positions:
         next_position = max(known_positions) + 1
         for position in range(next_position, next_position + 6):
-            pdf_url = f"https://eli.gov.pl/api/acts/MP/{current_year}/{position}/text.pdf"
+            pdf_url = f"https://api.sejm.gov.pl/eli/acts/MP/{current_year}/{position}/text.pdf"
             try:
                 raw_pdf, _ = fetch_bytes_once(
                     pdf_url,
