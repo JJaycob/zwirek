@@ -11,7 +11,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from pypdf import PdfReader
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -398,31 +398,81 @@ def eli_years_for(day):
     return sorted({day.year - 1, day.year, tomorrow.year})
 
 def fetch_eli_price_announcements():
-    """Fetch official ELI notices for adjacent years to handle New Year's Day."""
-    today = datetime.now(TZ).date()
+    """Search ELI directly for current fuel-price notices and supplement with recently changed acts."""
+    now = datetime.now(TZ)
+    today = now.date()
     years = eli_years_for(today)
 
-    matching = []
+    matching_by_eli = {}
     fetch_errors = []
+
+    # Use the ELI search endpoint instead of relying only on the annual listing,
+    # which can temporarily lag behind the newest Monitor Polski publications.
     for year in years:
-        api_url = f"https://api.sejm.gov.pl/eli/acts/MP/{year}"
+        params = urlencode({
+            "publisher": "MP",
+            "year": year,
+            "title": "maksymalnej ceny paliw ciekłych",
+            "limit": 100,
+            "sortBy": "promulgation",
+            "sortDir": "DESC",
+        })
+        api_url = f"https://api.sejm.gov.pl/eli/acts/search?{params}"
         try:
             raw, _ = fetch_bytes(api_url, accept="application/json")
             payload = json.loads(raw.decode("utf-8"))
             items = payload.get("items", [])
+            print(
+                f"ELI search {year}: {len(items)} pasujących aktów "
+                f"(łącznie w odpowiedzi: {payload.get('count', len(items))})."
+            )
         except Exception as exc:
-            fetch_errors.append(f"{year}: {exc}")
-            print(f"Nie udało się pobrać rocznika ELI {year}: {exc}")
+            fetch_errors.append(f"search {year}: {exc}")
+            print(f"Nie udało się wyszukać obwieszczeń ELI z {year} r.: {exc}")
             continue
 
         for item in items:
+            title = (item.get("title") or "").casefold()
             if (
                 item.get("publisher") == "MP"
-                and "maksymalnej ceny paliw ciekłych" in (item.get("title") or "").casefold()
+                and "maksymalnej ceny paliw ciekłych" in title
                 and item.get("promulgation")
             ):
-                matching.append((item, year))
+                key = item.get("ELI") or f"MP/{year}/{item.get('pos')}"
+                matching_by_eli[key] = (item, year)
 
+    # The changes feed catches newly added ELI records even when the annual
+    # listing/search index has not yet refreshed its result set.
+    since = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+    changes_url = (
+        "https://api.sejm.gov.pl/eli/changes/acts?"
+        + urlencode({"since": since})
+    )
+    try:
+        raw, _ = fetch_bytes(changes_url, accept="application/json")
+        payload = json.loads(raw.decode("utf-8"))
+        changes = payload.get("items", [])
+        new_matches = 0
+        for item in changes:
+            title = (item.get("title") or "").casefold()
+            if (
+                item.get("publisher") == "MP"
+                and "maksymalnej ceny paliw ciekłych" in title
+                and item.get("promulgation")
+            ):
+                year = int(item.get("year") or item["promulgation"][:4])
+                key = item.get("ELI") or f"MP/{year}/{item.get('pos')}"
+                matching_by_eli[key] = (item, year)
+                new_matches += 1
+        print(
+            f"ELI changes: {new_matches} nowych/zmienionych obwieszczeń paliwowych "
+            f"wśród {len(changes)} ostatnich zmian."
+        )
+    except Exception as exc:
+        fetch_errors.append(f"changes feed: {exc}")
+        print(f"Nie udało się pobrać listy ostatnio zmienionych aktów ELI: {exc}")
+
+    matching = list(matching_by_eli.values())
     matching.sort(
         key=lambda entry: (entry[0]["promulgation"], int(entry[0].get("pos", 0))),
         reverse=True,
@@ -432,13 +482,13 @@ def fetch_eli_price_announcements():
         detail = " | ".join(fetch_errors)
         raise RuntimeError(
             "ELI API nie zwróciło obwieszczeń o maksymalnej cenie paliw."
-            + (f" Błędy pobierania roczników: {detail}" if detail else "")
+            + (f" Błędy pobierania: {detail}" if detail else "")
         )
 
     announcements = []
     errors = []
-    # Keep enough recent notices to include the last published price from the previous year.
-    for item, year in matching[:10]:
+    # Keep enough recent notices to include the previous day's price for comparison.
+    for item, year in matching[:20]:
         try:
             announcements.append(parse_eli_notice(item, year))
         except Exception as exc:
@@ -469,16 +519,35 @@ def fetch_eli_price_announcements():
         f"ELI: odczytano {len(announcements)} oficjalnych obwieszczeń "
         f"z roczników {', '.join(map(str, years))}. "
         f"Najnowsze: {announcements[-1]['published']} – "
-        f"PB95 {announcements[-1]['price']:.2f} zł/l."
+        f"PB95 {announcements[-1]['price']:.2f} zł/l "
+        f"({announcements[-1]['url']})."
     )
     return announcements
 
-
 def fetch_recent_price_announcements():
-    """Use the reachable official ELI API first; Ministry news is a fallback."""
+    """Use the official ELI API first, checking Ministry news if ELI has no price for today."""
     try:
         announcements = fetch_eli_price_announcements()
-        print("Źródło danych: oficjalne API ELI / Monitor Polski.")
+        today = datetime.now(TZ).date()
+        today_notice = find_applicable_notice(announcements, today)
+
+        if today_notice is None:
+            print(
+                "ELI nie zawiera obwieszczenia obowiązującego dziś. "
+                "Sprawdzam uzupełniająco oficjalną listę Ministerstwa Energii."
+            )
+            try:
+                ministry_announcements = fetch_gov_price_announcements()
+                known = {item["url"] for item in announcements}
+                announcements.extend(
+                    item for item in ministry_announcements if item["url"] not in known
+                )
+                announcements.sort(key=lambda item: item["published"])
+            except Exception as ministry_error:
+                print(f"Nie udało się uzupełnić danych z gov.pl: {ministry_error}")
+
+        print("Źródło danych: oficjalne API ELI / Monitor Polski" +
+              (" + aktualności Ministerstwa Energii." if today_notice is None else "."))
         return announcements
     except Exception as eli_error:
         print(
@@ -488,7 +557,6 @@ def fetch_recent_price_announcements():
         announcements = fetch_gov_price_announcements()
         print("Źródło danych: aktualności Ministerstwa Energii.")
         return announcements
-
 
 def find_applicable_notice(announcements, target_date):
     applicable = [
