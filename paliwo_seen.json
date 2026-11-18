@@ -1,11 +1,11 @@
 {
-  "last_price": 6.02,
-  "last_notice": "https://eli.gov.pl/eli/MP/2026/1141/ogl/pol",
-  "last_report_for": "2026-11-17",
-  "last_report_price": 6.02,
+  "last_price": 5.99,
+  "last_notice": "https://monitorpolski.gov.pl/M2026000114401.pdf",
+  "last_report_for": "2026-11-18",
+  "last_report_price": 5.99,
   "reported_today_price": 6.1,
-  "sent_at": "2026-11-17T14:54:52.677818+01:00",
-  "effective_from": "2026-11-17",
-  "effective_to": "2026-11-17",
+  "sent_at": "2026-11-18T08:42:30.407884+01:00",
+  "effective_from": "2026-11-18",
+  "effective_to": "2026-11-18",
   "reported_previous_price": 6.02
 }
