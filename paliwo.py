@@ -473,6 +473,47 @@ def fetch_eli_price_announcements():
         print(f"Nie udało się pobrać listy ostatnio zmienionych aktów ELI: {exc}")
 
     matching = list(matching_by_eli.values())
+
+    # The annual/search feeds can lag behind the official publication.
+    # Probe the next publication numbers directly; the detail endpoint may
+    # already expose a fresh act even when it is absent from both listings.
+    for year in years:
+        positions = [
+            int(item.get("pos", 0))
+            for item, item_year in matching
+            if item_year == year
+        ]
+        if not positions:
+            continue
+        next_position = max(positions) + 1
+        for position in range(next_position, next_position + 11):
+            detail_url = f"https://api.sejm.gov.pl/eli/acts/MP/{year}/{position}"
+            try:
+                raw, _ = fetch_bytes(detail_url, accept="application/json")
+                item = json.loads(raw.decode("utf-8"))
+            except HTTPError as exc:
+                if exc.code == 404:
+                    continue
+                print(f"ELI direct detail {year}/{position}: {exc}")
+                continue
+            except Exception as exc:
+                print(f"ELI direct detail {year}/{position}: {exc}")
+                continue
+
+            title = (item.get("title") or "").casefold()
+            if (
+                item.get("publisher") == "MP"
+                and "maksymalnej ceny paliw ciekłych" in title
+                and item.get("promulgation")
+            ):
+                key = item.get("ELI") or f"MP/{year}/{position}"
+                matching_by_eli[key] = (item, year)
+                print(
+                    f"ELI direct detail: znaleziono nowe obwieszczenie "
+                    f"M.P. {year} poz. {position} z {item['promulgation']}."
+                )
+
+    matching = list(matching_by_eli.values())
     matching.sort(
         key=lambda entry: (entry[0]["promulgation"], int(entry[0].get("pos", 0))),
         reverse=True,
