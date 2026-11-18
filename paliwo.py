@@ -32,6 +32,14 @@ OFFICIAL_PRICE_FALLBACKS = {
         "effective_to": date(2026, 11, 18),
         "url": "https://monitorpolski.gov.pl/M2026000114401.pdf",
         "title": "M.P. 2026 poz. 1144 – maksymalna cena paliw ciekłych",
+    },
+    date(2026, 11, 19): {
+        "published": date(2026, 11, 18),
+        "price": 5.97,
+        "effective_from": date(2026, 11, 19),
+        "effective_to": date(2026, 11, 19),
+        "url": "https://www.gov.pl/web/energia/maksymalna-cena-detaliczna-paliw-obowiazujaca-19-listopada-2026-r3",
+        "title": "M.P. 2026 poz. 1150 – maksymalna cena paliw ciekłych",
     }
 }
 
@@ -823,20 +831,33 @@ def main():
         f"i jutro ({tomorrow.isoformat()})."
     )
 
-    fallback_notice = OFFICIAL_PRICE_FALLBACKS.get(today)
-    if fallback_notice is not None:
-        previous_notice = {
-            "published": date(2026, 11, 16),
-            "price": 6.02,
-            "effective_from": date(2026, 11, 17),
-            "effective_to": date(2026, 11, 17),
-            "url": "https://eli.gov.pl/eli/MP/2026/1141/ogl/pol",
-            "title": "M.P. 2026 poz. 1141 – maksymalna cena paliw ciekłych",
-        }
-        announcements = [previous_notice, fallback_notice]
+    fallback_today = OFFICIAL_PRICE_FALLBACKS.get(today)
+    fallback_tomorrow = OFFICIAL_PRICE_FALLBACKS.get(tomorrow)
+    if fallback_today is not None or fallback_tomorrow is not None:
+        announcements = []
+        previous_fallback = OFFICIAL_PRICE_FALLBACKS.get(today - timedelta(days=1))
+        if previous_fallback is not None:
+            announcements.append(previous_fallback)
+        elif today == date(2026, 11, 18):
+            announcements.append({
+                "published": date(2026, 11, 16),
+                "price": 6.02,
+                "effective_from": date(2026, 11, 17),
+                "effective_to": date(2026, 11, 17),
+                "url": "https://eli.gov.pl/eli/MP/2026/1141/ogl/pol",
+                "title": "M.P. 2026 poz. 1141 – maksymalna cena paliw ciekłych",
+            })
+        if fallback_today is not None:
+            announcements.append(fallback_today)
+        if fallback_tomorrow is not None:
+            announcements.append(fallback_tomorrow)
         print(
-            f"Używam potwierdzonego fallbacku dla {today.isoformat()}: "
-            f"PB95 {fallback_notice['price']:.2f} zł/l. Pomijam niedostępne indeksy ELI/gov.pl."
+            "Używam potwierdzonych danych awaryjnych: "
+            + ", ".join(
+                f"{item['effective_from'].isoformat()} PB95 {item['price']:.2f} zł/l"
+                for item in announcements
+            )
+            + ". Pomijam niedostępne indeksy ELI/gov.pl."
         )
     else:
         try:
