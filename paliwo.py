@@ -582,7 +582,7 @@ def fetch_eli_price_announcements():
                         for page in PdfReader(BytesIO(raw_pdf)).pages
                     )
                     normalized = " ".join(
-                        pdf_text.replace("\\xa0", " ").split()
+                        pdf_text.replace("\xa0", " ").split()
                     ).casefold()
                 except Exception as exc:
                     print(f"Monitor Polski PDF {current_year}/{position}: {exc}")
@@ -595,12 +595,12 @@ def fetch_eli_price_announcements():
                     continue
 
                 publication_match = re.search(
-                    rf"warszawa,\\s*dnia\\s*(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+                    rf"warszawa,\s*dnia\s*(\d{{1,2}})\s+({MONTH_PATTERN})\s+(20\d{{2}})",
                     normalized,
                 )
                 if not publication_match:
                     publication_match = re.search(
-                        rf"z dnia\\s+(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+                        rf"z dnia\s+(\d{{1,2}})\s+({MONTH_PATTERN})\s+(20\d{{2}})",
                         normalized,
                     )
                 if not publication_match:
@@ -652,8 +652,14 @@ def fetch_eli_price_announcements():
     # Keep enough recent notices to include the previous day's price for comparison.
     for item, year in matching[:20]:
         try:
-            cached_pdf = direct_pdf_cache.get((year, int(item["pos"])))
-            announcements.append(parse_eli_notice(item, year, pdf_raw=cached_pdf))
+            position = int(item["pos"])
+            cached_pdf = direct_pdf_cache.get((year, position))
+            notice = parse_eli_notice(item, year, pdf_raw=cached_pdf)
+            if cached_pdf is not None:
+                notice["url"] = (
+                    f"https://monitorpolski.gov.pl/M{year}{position:07d}01.pdf"
+                )
+            announcements.append(notice)
         except Exception as exc:
             errors.append(f"{item.get('title')}: {exc}")
             print(f"Pomijam nieczytelne obwieszczenie ELI: {exc}")
