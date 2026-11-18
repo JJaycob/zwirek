@@ -563,6 +563,77 @@ def fetch_eli_price_announcements():
                 f"poz. {position} z {published.isoformat()}."
             )
 
+        # ELI can lag behind the official Monitor Polski publication. Probe
+        # the primary journal's PDF archive using its official document names.
+        # Example: position 1144 in 2026 -> M2026000114401.pdf.
+        if next_position:
+            for position in range(next_position, next_position + 8):
+                official_pdf_url = (
+                    f"https://monitorpolski.gov.pl/M{current_year}{position:07d}01.pdf"
+                )
+                try:
+                    raw_pdf, _ = fetch_bytes_once(
+                        official_pdf_url,
+                        accept="application/pdf,*/*",
+                        timeout=5,
+                    )
+                    pdf_text = " ".join(
+                        (page.extract_text() or "")
+                        for page in PdfReader(BytesIO(raw_pdf)).pages
+                    )
+                    normalized = " ".join(
+                        pdf_text.replace("\\xa0", " ").split()
+                    ).casefold()
+                except Exception as exc:
+                    print(f"Monitor Polski PDF {current_year}/{position}: {exc}")
+                    continue
+
+                if (
+                    "maksymalnej ceny paliw ciekłych" not in normalized
+                    or "benzyny silnikowej bezołowiowej 95" not in normalized
+                ):
+                    continue
+
+                publication_match = re.search(
+                    rf"warszawa,\\s*dnia\\s*(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+                    normalized,
+                )
+                if not publication_match:
+                    publication_match = re.search(
+                        rf"z dnia\\s+(\\d{{1,2}})\\s+({MONTH_PATTERN})\\s+(20\\d{{2}})",
+                        normalized,
+                    )
+                if not publication_match:
+                    print(
+                        f"Monitor Polski PDF {current_year}/{position}: "
+                        "znaleziono dokument bez rozpoznanej daty publikacji."
+                    )
+                    continue
+
+                published = parse_polish_month_date(
+                    publication_match.group(1),
+                    publication_match.group(2),
+                    publication_match.group(3),
+                )
+                item = {
+                    "publisher": "MP",
+                    "year": current_year,
+                    "pos": position,
+                    "promulgation": published.isoformat(),
+                    "title": (
+                        f"Obwieszczenie Ministra Energii z dnia {publication_match.group(1)} "
+                        f"{publication_match.group(2)} {publication_match.group(3)} r. "
+                        "w sprawie maksymalnej ceny paliw ciekłych"
+                    ),
+                }
+                key = f"MP/{current_year}/{position}"
+                matching_by_eli[key] = (item, current_year)
+                direct_pdf_cache[(current_year, position)] = raw_pdf
+                print(
+                    f"Monitor Polski PDF: znaleziono obwieszczenie M.P. {current_year} "
+                    f"poz. {position} z {published.isoformat()}."
+                )
+
     matching = list(matching_by_eli.values())
     matching.sort(
         key=lambda entry: (entry[0]["promulgation"], int(entry[0].get("pos", 0))),
