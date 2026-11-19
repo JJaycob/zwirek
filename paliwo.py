@@ -40,6 +40,14 @@ OFFICIAL_PRICE_FALLBACKS = {
         "effective_to": date(2026, 11, 19),
         "url": "https://www.gov.pl/web/energia/maksymalna-cena-detaliczna-paliw-obowiazujaca-19-listopada-2026-r3",
         "title": "M.P. 2026 poz. 1150 – maksymalna cena paliw ciekłych",
+    },
+    date(2026, 11, 20): {
+        "published": date(2026, 11, 19),
+        "price": 5.93,
+        "effective_from": date(2026, 11, 20),
+        "effective_to": date(2026, 11, 20),
+        "url": "https://www.gov.pl/web/energia/maksymalna-cena-detaliczna-paliw-obowiazujaca-20-listopada-2026-r",
+        "title": "M.P. 2026 poz. 1153 – maksymalna cena paliw ciekłych",
     }
 }
 
