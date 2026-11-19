@@ -874,16 +874,8 @@ def main():
             announcements = []
             print("Korzystam z wcześniej zweryfikowanych danych awaryjnych.")
         else:
-            if not check_only:
-                notify_once(
-                    "last_error_for",
-                    today.isoformat(),
-                    "⚠️ BOT PB95 – PROBLEM Z ODCZYTEM\n"
-                    f"Data: {today:%d.%m.%Y}\n"
-                    "Nie udało się pobrać ani odczytać oficjalnego komunikatu Ministerstwa. "
-                    "Bot ponowi próbę przy kolejnym uruchomieniu.\n"
-                    f"Szczegóły: {str(exc)[:900]}",
-                )
+            # Let the workflow-level failure handler send one Telegram alert
+            # with a link to the complete diagnostic log.
             raise
 
     if fallback_announcements:
