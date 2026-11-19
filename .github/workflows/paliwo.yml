@@ -9,17 +9,26 @@ on:
       - ".github/workflows/paliwo.yml"
       - "requirements.txt"
   schedule:
-    # Start checking before the usual publication time; if tomorrow's notice is absent,
-    # the script exits without sending and the next scheduled attempt checks again.
-    - cron: "37 13 * * *"
-    - cron: "28 14 * * *"
-    - cron: "37 15 * * *"
-    - cron: "47 15 * * *"
-    - cron: "7 16 * * *"
-    - cron: "27 16 * * *"
+    # Stałe godziny polskie przez cały rok; GitHub obsługuje strefy IANA i zmianę czasu.
+    # Powtarzane próby sprawdzają, czy później opublikowano oficjalny komunikat.
+    - cron: "37 14 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "28 15 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "37 16 * * *"
+      timezone: "Europe/Warsaw"
     - cron: "47 16 * * *"
+      timezone: "Europe/Warsaw"
     - cron: "7 17 * * *"
-    - cron: "37 17 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "27 17 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "47 17 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "7 18 * * *"
+      timezone: "Europe/Warsaw"
+    - cron: "37 18 * * *"
+      timezone: "Europe/Warsaw"
   workflow_dispatch:
 
 permissions:
@@ -69,6 +78,13 @@ jobs:
           assert paliwo.eli_years_for(date(2027, 1, 1)) == [2026, 2027]
           print("Date parser and New Year rollover tests passed.")
           PY
+
+      - name: Log schedule trigger
+        if: github.event_name == 'schedule'
+        run: |
+          echo "Scheduled cron: ${{ github.event.schedule }}"
+          echo "Runner UTC: $(date -u --iso-8601=seconds)"
+          echo "Runner Warsaw: $(TZ=Europe/Warsaw date --iso-8601=seconds)"
 
       - name: Check official CPN announcement and notify
         env:
