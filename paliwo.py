@@ -723,38 +723,38 @@ def fetch_eli_price_announcements():
     return announcements
 
 def fetch_recent_price_announcements():
-    """Use the official ELI API first, checking Ministry news if ELI has no price for today."""
+    """Merge official ELI and Ministry feeds so tomorrow's new notice is not missed."""
+    announcements = []
+    source_errors = []
+
     try:
         announcements = fetch_eli_price_announcements()
-        today = datetime.now(TZ).date()
-        today_notice = find_applicable_notice(announcements, today)
-
-        if today_notice is None:
-            print(
-                "ELI nie zawiera obwieszczenia obowiązującego dziś. "
-                "Sprawdzam uzupełniająco oficjalną listę Ministerstwa Energii."
-            )
-            try:
-                ministry_announcements = fetch_gov_price_announcements()
-                known = {item["url"] for item in announcements}
-                announcements.extend(
-                    item for item in ministry_announcements if item["url"] not in known
-                )
-                announcements.sort(key=lambda item: item["published"])
-            except Exception as ministry_error:
-                print(f"Nie udało się uzupełnić danych z gov.pl: {ministry_error}")
-
-        print("Źródło danych: oficjalne API ELI / Monitor Polski" +
-              (" + aktualności Ministerstwa Energii." if today_notice is None else "."))
-        return announcements
+        print("Pobrano komunikaty z oficjalnego API ELI / Monitor Polski.")
     except Exception as eli_error:
-        print(
-            "Nie można pobrać oficjalnych danych z ELI. "
-            f"Próbuję aktualności Ministerstwa Energii: {eli_error}"
+        source_errors.append(f"ELI: {eli_error}")
+        print(f"Nie można pobrać danych z ELI: {eli_error}")
+
+    # Always check the Ministry news list as well. ELI may already contain
+    # today's notice while the Ministry has published tomorrow's notice first.
+    try:
+        ministry_announcements = fetch_gov_price_announcements()
+        known = {item["url"] for item in announcements}
+        announcements.extend(
+            item for item in ministry_announcements if item["url"] not in known
         )
-        announcements = fetch_gov_price_announcements()
-        print("Źródło danych: aktualności Ministerstwa Energii.")
-        return announcements
+        print("Uzupełniono dane o aktualności Ministerstwa Energii.")
+    except Exception as ministry_error:
+        source_errors.append(f"gov.pl: {ministry_error}")
+        print(f"Nie udało się pobrać aktualności Ministerstwa Energii: {ministry_error}")
+
+    if not announcements:
+        raise RuntimeError(
+            "Nie udało się pobrać danych z żadnego oficjalnego źródła. "
+            + " | ".join(source_errors)
+        )
+
+    announcements.sort(key=lambda item: item["published"])
+    return announcements
 
 def find_applicable_notice(announcements, target_date):
     applicable = [
