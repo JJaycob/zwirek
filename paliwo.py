@@ -965,6 +965,20 @@ def main():
                 f"{today_price:.2f} zł/l."
             )
 
+        # At the final daily check, explicitly report that tomorrow's price
+        # is still unpublished instead of silently ending the day.
+        final_check_passed = now.hour > 18 or (now.hour == 18 and now.minute >= 37)
+        if final_check_passed and not check_only:
+            notify_once(
+                "missing_tomorrow_for",
+                tomorrow.isoformat(),
+                "ℹ️ BOT PB95 – BRAK OFICJALNEJ CENY NA JUTRO\n"
+                f"Data: {tomorrow:%d.%m.%Y}\n"
+                "Ministerstwo nie opublikowało jeszcze potwierdzonej ceny PB95 na jutro. "
+                "Nie podaję niepotwierdzonej wartości. Kolejna próba sprawdzi to ponownie.\n"
+                f"Ostatnie potwierdzone źródło: {today_notice['url']}",
+            )
+
         return
 
     today_price = today_notice["price"]
