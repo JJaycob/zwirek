@@ -80,9 +80,10 @@ jobs:
           print("Date parser and New Year rollover tests passed.")
           PY
 
-      - name: Log schedule trigger
-        if: github.event_name == 'schedule'
+      - name: Log trigger source and runner time
+        if: always()
         run: |
+          echo "Event: ${GITHUB_EVENT_NAME}"
           echo "Scheduled cron: ${{ github.event.schedule }}"
           echo "Runner UTC: $(date -u --iso-8601=seconds)"
           echo "Runner Warsaw: $(TZ=Europe/Warsaw date --iso-8601=seconds)"
