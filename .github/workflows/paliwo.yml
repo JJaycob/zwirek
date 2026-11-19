@@ -41,6 +41,7 @@ concurrency:
 jobs:
   check-price:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -106,3 +107,19 @@ jobs:
           else
             echo "No state changes."
           fi
+
+      - name: Notify Telegram when workflow fails
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          MESSAGE="⚠️ BOT PB95 – URUCHOMIENIE ZAKOŃCZONE BŁĘDEM
+          Data: $(TZ=Europe/Warsaw date '+%d.%m.%Y %H:%M:%S')
+          Zdarzenie: ${GITHUB_EVENT_NAME}
+          Szczegóły i logi: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl --silent --show-error --fail --retry 2 --retry-all-errors --max-time 25 \
+            --request POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}" \
+            --data-urlencode "disable_web_page_preview=true"
