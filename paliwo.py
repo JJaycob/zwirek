@@ -820,7 +820,9 @@ def notify_once(state_key, target, message):
         send_telegram(message[:4000])
     except Exception as exc:
         print(f"Nie udało się wysłać pomocniczego powiadomienia Telegram: {exc}")
-        return False
+        # A failed alert must fail the workflow too, so the workflow-level
+        # failure handler can make another attempt and the run is not green.
+        raise
     state[state_key] = target
     state[f"{state_key}_at"] = datetime.now(TZ).isoformat()
     save_state(state)
@@ -841,48 +843,62 @@ def main():
 
     fallback_today = OFFICIAL_PRICE_FALLBACKS.get(today)
     fallback_tomorrow = OFFICIAL_PRICE_FALLBACKS.get(tomorrow)
-    if fallback_today is not None or fallback_tomorrow is not None:
-        announcements = []
-        previous_fallback = OFFICIAL_PRICE_FALLBACKS.get(today - timedelta(days=1))
-        if previous_fallback is not None:
-            announcements.append(previous_fallback)
-        elif today == date(2026, 11, 18):
-            announcements.append({
-                "published": date(2026, 11, 16),
-                "price": 6.02,
-                "effective_from": date(2026, 11, 17),
-                "effective_to": date(2026, 11, 17),
-                "url": "https://eli.gov.pl/eli/MP/2026/1141/ogl/pol",
-                "title": "M.P. 2026 poz. 1141 – maksymalna cena paliw ciekłych",
-            })
-        if fallback_today is not None:
-            announcements.append(fallback_today)
-        if fallback_tomorrow is not None:
-            announcements.append(fallback_tomorrow)
-        print(
-            "Używam potwierdzonych danych awaryjnych: "
-            + ", ".join(
-                f"{item['effective_from'].isoformat()} PB95 {item['price']:.2f} zł/l"
-                for item in announcements
-            )
-            + ". Pomijam niedostępne indeksy ELI/gov.pl."
-        )
-    else:
-        try:
-            announcements = fetch_recent_price_announcements()
-        except Exception as exc:
-            print(f"Nie udało się pobrać lub odczytać komunikatów Ministerstwa: {exc}")
+
+    # Use verified one-off data only as a supplement, never instead of checking
+    # for a newly published notice. Otherwise yesterday's fallback could stop
+    # the bot from discovering tomorrow's fresh price.
+    fallback_announcements = []
+    previous_fallback = OFFICIAL_PRICE_FALLBACKS.get(today - timedelta(days=1))
+    if previous_fallback is not None:
+        fallback_announcements.append(previous_fallback)
+    elif today == date(2026, 11, 18):
+        fallback_announcements.append({
+            "published": date(2026, 11, 16),
+            "price": 6.02,
+            "effective_from": date(2026, 11, 17),
+            "effective_to": date(2026, 11, 17),
+            "url": "https://eli.gov.pl/eli/MP/2026/1141/ogl/pol",
+            "title": "M.P. 2026 poz. 1141 – maksymalna cena paliw ciekłych",
+        })
+    if fallback_today is not None:
+        fallback_announcements.append(fallback_today)
+    if fallback_tomorrow is not None:
+        fallback_announcements.append(fallback_tomorrow)
+
+    try:
+        announcements = fetch_recent_price_announcements()
+        print("Odczytano najnowsze komunikaty z oficjalnych źródeł.")
+    except Exception as exc:
+        print(f"Nie udało się pobrać najnowszych komunikatów: {exc}")
+        if fallback_announcements:
+            announcements = []
+            print("Korzystam z wcześniej zweryfikowanych danych awaryjnych.")
+        else:
             if not check_only:
                 notify_once(
                     "last_error_for",
                     today.isoformat(),
                     "⚠️ BOT PB95 – PROBLEM Z ODCZYTEM\n"
                     f"Data: {today:%d.%m.%Y}\n"
-                    "Nie udało się pobrać lub odczytać oficjalnego komunikatu Ministerstwa. "
-                    "Bot spróbuje ponownie przy następnym uruchomieniu.\n"
+                    "Nie udało się pobrać ani odczytać oficjalnego komunikatu Ministerstwa. "
+                    "Bot ponowi próbę przy kolejnym uruchomieniu.\n"
                     f"Szczegóły: {str(exc)[:900]}",
                 )
             raise
+
+    if fallback_announcements:
+        known_urls = {item["url"] for item in announcements}
+        announcements.extend(
+            item for item in fallback_announcements if item["url"] not in known_urls
+        )
+        announcements.sort(key=lambda item: item["published"])
+        print(
+            "Dostępne potwierdzone dane awaryjne: "
+            + ", ".join(
+                f"{item['effective_from'].isoformat()} PB95 {item['price']:.2f} zł/l"
+                for item in fallback_announcements
+            )
+        )
 
     today_notice = find_applicable_notice(announcements, today)
     tomorrow_notice = find_applicable_notice(announcements, tomorrow)
