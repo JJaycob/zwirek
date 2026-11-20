@@ -1,11 +1,11 @@
 {
-  "last_price": 5.93,
-  "last_notice": "https://www.gov.pl/web/energia/maksymalna-cena-detaliczna-paliw-obowiazujaca-20-listopada-2026-r",
-  "last_report_for": "2026-11-20",
-  "last_report_price": 5.93,
-  "reported_today_price": 5.97,
-  "sent_at": "2026-11-19T15:32:23.611560+01:00",
-  "effective_from": "2026-11-20",
-  "effective_to": "2026-11-20",
+  "last_price": 5.9,
+  "last_notice": "https://monitorpolski.gov.pl/M2026000115601.pdf",
+  "last_report_for": "2026-11-21",
+  "last_report_price": 5.9,
+  "reported_today_price": 5.93,
+  "sent_at": "2026-11-20T22:31:30.637564+01:00",
+  "effective_from": "2026-11-21",
+  "effective_to": "2026-11-23",
   "reported_previous_price": 6.02
 }
