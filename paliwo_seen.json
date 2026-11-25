@@ -1,11 +1,11 @@
 {
-  "last_price": 5.84,
-  "last_notice": "https://monitorpolski.gov.pl/M2026000117201.pdf",
-  "last_report_for": "2026-11-25",
-  "last_report_price": 5.84,
-  "reported_today_price": 5.9,
-  "sent_at": "2026-11-25T00:15:38.991667+01:00",
-  "effective_from": "2026-11-25",
-  "effective_to": "2026-11-25",
+  "last_price": 5.82,
+  "last_notice": "https://monitorpolski.gov.pl/M2026000117701.pdf",
+  "last_report_for": "2026-11-26",
+  "last_report_price": 5.82,
+  "reported_today_price": 5.84,
+  "sent_at": "2026-11-25T23:43:55.674468+01:00",
+  "effective_from": "2026-11-26",
+  "effective_to": "2026-11-26",
   "reported_previous_price": 5.9
 }
